@@ -49,3 +49,6 @@ DEF_GCOV_COUNTER(GCOV_COUNTER_IOR, "ior", _ior)
 
 /* Time profile collecting first run of a function */
 DEF_GCOV_COUNTER(GCOV_TIME_PROFILER, "time_profiler", _time_profile)
+
+/* Condition/decision */
+DEF_GCOV_COUNTER(GCOV_COUNTER_MCDC, "mcdc", _ior)
