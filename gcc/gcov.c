@@ -76,6 +76,7 @@ using namespace std;
 struct function_info;
 struct block_info;
 struct source_info;
+class condition_info;
 
 /* Describes an arc between two basic blocks.  */
 
@@ -128,6 +129,27 @@ struct block_location_info
   vector<unsigned> lines;
 };
 
+class condition_info
+{
+public:
+  condition_info ();
+
+  int popcount () const;
+
+  gcov_type_unsigned truev;
+  gcov_type_unsigned falsev;
+
+  unsigned n_terms;
+};
+
+condition_info::condition_info (): truev (0), falsev (0), n_terms (0)
+{
+}
+
+int condition_info::popcount () const {
+    return __builtin_popcountll (truev) + __builtin_popcountll (falsev);
+}
+
 /* Describes a basic block. Contains lists of arcs to successor and
    predecessor blocks.  */
 
@@ -159,6 +181,8 @@ struct block_info
 
   /* Block is a landing pad for longjmp or throw.  */
   unsigned is_nonlocal_return : 1;
+
+  condition_info conditions;
 
   vector<block_location_info> locations;
 
@@ -264,6 +288,8 @@ struct function_info
   vector<block_info> blocks;
   unsigned blocks_executed;
 
+  vector<condition_info*> conditions;
+
   /* Raw arc coverage counts.  */
   vector<gcov_type> counts;
 
@@ -310,6 +336,9 @@ struct coverage_info
   int branches;
   int branches_executed;
   int branches_taken;
+
+  int conditions;
+  int conditions_covered;
 
   int calls;
   int calls_executed;
@@ -451,6 +480,10 @@ static int multiple_files = 0;
 
 static int flag_branches = 0;
 
+/* Output conditions (modified condition/decision coverage) */
+
+static int flag_conditions = 0;
+
 /* Show unconditional branches too.  */
 static int flag_unconditional = 0;
 
@@ -546,6 +579,7 @@ static int read_count_file (void);
 static void solve_flow_graph (function_info *);
 static void find_exception_blocks (function_info *);
 static void add_branch_counts (coverage_info *, const arc_info *);
+static void add_condition_counts (coverage_info *, const block_info *);
 static void add_line_counts (coverage_info *, function_info *);
 static void executed_summary (unsigned, unsigned);
 static void function_summary (const coverage_info *, const char *);
@@ -553,6 +587,7 @@ static const char *format_gcov (gcov_type, gcov_type, int);
 static void accumulate_line_counts (source_info *);
 static void output_gcov_file (const char *, source_info *);
 static int output_branch_count (FILE *, int, const arc_info *);
+static void output_conditions (FILE *, const block_info *);
 static void output_lines (FILE *, const source_info *);
 static char *make_gcov_file_name (const char *, const char *);
 static char *mangle_name (const char *, char *);
@@ -815,6 +850,7 @@ print_usage (int error_p)
   fnotice (file, "  -b, --branch-probabilities      Include branch probabilities in output\n");
   fnotice (file, "  -c, --branch-counts             Output counts of branches taken\n\
                                     rather than percentages\n");
+  fnotice (file, "  -g, --conditions                Include condition coverage in output (MC/DC)\n");
   fnotice (file, "  -d, --display-progress          Display progress information\n");
   fnotice (file, "  -f, --function-summaries        Output summaries for each function\n");
   fnotice (file, "  -h, --help                      Print this help, then exit\n");
@@ -861,6 +897,7 @@ static const struct option options[] =
   { "all-blocks",           no_argument,       NULL, 'a' },
   { "branch-probabilities", no_argument,       NULL, 'b' },
   { "branch-counts",        no_argument,       NULL, 'c' },
+  { "conditions",           no_argument,       NULL, 'g' },
   { "intermediate-format",  no_argument,       NULL, 'i' },
   { "human-readable",	    no_argument,       NULL, 'j' },
   { "no-output",            no_argument,       NULL, 'n' },
@@ -886,7 +923,7 @@ process_args (int argc, char **argv)
 {
   int opt;
 
-  const char *opts = "abcdfhijklmno:prs:uvwx";
+  const char *opts = "abcgdfhijklmno:prs:uvwx";
   while ((opt = getopt_long (argc, argv, opts, options, NULL)) != -1)
     {
       switch (opt)
@@ -899,6 +936,9 @@ process_args (int argc, char **argv)
 	  break;
 	case 'c':
 	  flag_counts = 1;
+	  break;
+	case 'g':
+	  flag_conditions = 1;
 	  break;
 	case 'f':
 	  flag_function_summary = 1;
@@ -1681,6 +1721,27 @@ read_graph_file (void)
 		  }
 	    }
 	}
+      else if (fn && tag == GCOV_TAG_MCDC)
+	{
+        unsigned num_dests = GCOV_TAG_MCDC_NUM (length);
+
+        if (!fn->conditions.empty ())
+            fnotice (stderr, "%s:already seen conditions for '%s'\n",
+                    bbg_file_name, fn->name );
+        else
+            fn->conditions.resize (num_dests);
+
+        for (unsigned i = 0; i < num_dests; ++i) {
+            unsigned idx = gcov_read_unsigned ();
+
+            if (idx >= fn->blocks.size ())
+                goto corrupt;
+
+            condition_info *info = &fn->blocks[idx].conditions;
+            info->n_terms = gcov_read_unsigned ();
+            fn->conditions[i] = info;
+        }
+	}
       else if (fn && tag == GCOV_TAG_LINES)
 	{
 	  unsigned blockno = gcov_read_unsigned ();
@@ -1813,6 +1874,21 @@ read_count_file (void)
 	      goto cleanup;
 	    }
 	}
+      else if (tag == GCOV_TAG_FOR_COUNTER (GCOV_COUNTER_MCDC) && fn)
+    {
+          unsigned read_length = length;
+          if (length != GCOV_TAG_COUNTER_LENGTH (2 * fn->conditions.size ()))
+              goto mismatch;
+
+          if (read_length > 0)
+          {
+            for (ix = 0; ix != fn->conditions.size (); ix++)
+            {
+              fn->conditions[ix]->truev  |= gcov_read_counter ();
+              fn->conditions[ix]->falsev |= gcov_read_counter ();
+            }
+          }
+    }
       else if (tag == GCOV_TAG_FOR_COUNTER (GCOV_COUNTER_ARCS) && fn)
 	{
 	  if (length != GCOV_TAG_COUNTER_LENGTH (fn->counts.size ()))
@@ -2152,6 +2228,13 @@ add_branch_counts (coverage_info *coverage, const arc_info *arc)
     }
 }
 
+static void
+add_condition_counts (coverage_info *coverage, const block_info *block)
+{
+  coverage->conditions += 2 * block->conditions.n_terms;
+  coverage->conditions_covered += block->conditions.popcount ();
+}
+
 /* Format COUNT, if flag_human_readable_numbers is set, return it human
    readable format.  */
 
@@ -2272,7 +2355,13 @@ function_summary (const coverage_info *coverage, const char *title)
 		 coverage->calls);
       else
 	fnotice (stdout, "No calls\n");
+
     }
+
+  if (flag_conditions)
+      fnotice (stdout, "Conditions covered:%s of %d\n",
+        format_gcov (coverage->conditions_covered, coverage->conditions, 2),
+        coverage->conditions);
 }
 
 /* Canonicalize the filename NAME by canonicalizing directory
@@ -2575,6 +2664,12 @@ static void accumulate_line_info (line_info *line, source_info *src,
 	 it != line->branches.end (); it++)
       add_branch_counts (&src->coverage, *it);
 
+  if (add_coverage)
+    for (vector<block_info *>::iterator it = line->blocks.begin ();
+	 it != line->blocks.end (); it++)
+      add_condition_counts (&src->coverage, *it);
+
+
   if (!line->blocks.empty ())
     {
       /* The user expects the line count to be the number of times
@@ -2671,6 +2766,30 @@ accumulate_line_counts (source_info *src)
 	      }
 	  }
       }
+}
+
+static void
+output_conditions (FILE *gcov_file, const block_info *binfo)
+{
+    const condition_info& info = binfo->conditions;
+    if (info.n_terms == 0)
+        return;
+
+    const int expected = 2 * info.n_terms;
+    const int got = info.popcount ();
+
+    fnotice (gcov_file, "conditions covered %d/%d\n", got, expected);
+    if (expected == got)
+        return;
+
+    for (unsigned i = 0; i < info.n_terms; i++) {
+        gcov_type_unsigned index = 1;
+        index <<= i;
+        if (!(index & info.truev))
+            fnotice (gcov_file, "condition %2u not covered (true)\n", i);
+        if (!(index & info.falsev))
+            fnotice (gcov_file, "condition %2u not covered (false)\n", i);
+    }
 }
 
 /* Output information about ARC number IX.  Returns nonzero if
@@ -2867,16 +2986,29 @@ output_line_details (FILE *f, const line_info *line, unsigned line_num)
 	  if (flag_branches)
 	    for (arc = (*it)->succ; arc; arc = arc->succ_next)
 	      jx += output_branch_count (f, jx, arc);
+
+      if (flag_conditions)
+        output_conditions (f, *it);
 	}
     }
-  else if (flag_branches)
+  else
     {
+      if (flag_branches)
+      {
       int ix;
 
       ix = 0;
       for (vector<arc_info *>::const_iterator it = line->branches.begin ();
 	   it != line->branches.end (); it++)
 	ix += output_branch_count (f, ix, (*it));
+      }
+
+      if (flag_conditions)
+         {
+           for (vector<block_info *>::const_iterator it = line->blocks.begin ();
+	            it != line->blocks.end (); it++)
+              output_conditions (f, *it);
+          }
     }
 }
 

@@ -25,6 +25,7 @@ along with GCC; see the file COPYING3.  If not see
    Tree-based version.  See profile.c for overview.  */
 
 #include "config.h"
+#define INCLUDE_ALGORITHM
 #include "system.h"
 #include "coretypes.h"
 #include "memmodel.h"
@@ -53,6 +54,9 @@ along with GCC; see the file COPYING3.  If not see
 #include "stringpool.h"
 #include "attribs.h"
 #include "tree-pretty-print.h"
+#include "cfganal.h"
+#include "cfgloop.h"
+#include "gimple-pretty-print.h"
 
 static GTY(()) tree gcov_type_node;
 static GTY(()) tree tree_interval_profiler_fn;
@@ -67,6 +71,751 @@ static GTY(()) tree tree_time_profiler_counter;
 static GTY(()) tree ic_void_ptr_var;
 static GTY(()) tree ic_gcov_type_ptr_var;
 static GTY(()) tree ptr_void;
+
+namespace {
+
+struct mcdc_ctx {
+    /* output arrays */
+    basic_block *blocks;
+    int *sizes;
+
+    /* the size of the blocks buffer */
+    int maxelems;
+
+    /*
+     * number of expressions found; how many counters must be allocated.
+     *
+     * must be smaller than maxelem. Describes the number of blocks+sizes
+     * written.
+     *
+     * Can be replaced by popcount (seen)
+     */
+    int exprs;
+
+    /*
+     * dominating or first-in-expr basic blocks seen; this effectively stops
+     * loop edges from being taken again
+     */
+    auto_sbitmap seen;
+
+    explicit mcdc_ctx (unsigned size) : maxelems (0), exprs (0), seen (size) {}
+
+    void commit (basic_block top, int nblocks) {
+        blocks   += nblocks;
+        *sizes   += nblocks;
+        maxelems -= nblocks;
+
+        exprs++;
+        sizes++;
+        *sizes = 0;
+
+        bitmap_set_bit (seen, top->index);
+    }
+};
+
+}
+
+void print(const basic_block* blocks, int size, const char* s = "") {
+    return;
+    printf("%s [ ", s);
+    for (int i = 0; i < size; i++)
+        printf("%d ", blocks[i]->index);
+    printf("]\n");
+}
+
+void print(basic_block entry, basic_block exit) {
+    return;
+    puts(current_function_name());
+    basic_block bb;
+    FOR_BB_BETWEEN(bb, entry, exit, next_bb)
+    {
+        edge e; edge_iterator ei;
+        FOR_EACH_EDGE(e, ei, bb->succs) {
+            printf("A%d -> A%d\n", e->src->index, e->dest->index);
+        }
+    }
+}
+
+void print(edge e) {
+    return;
+    printf ("==== EDGE %d -> %d ====\n", e->src->index, e->dest->index);
+    gimple_stmt_iterator i;
+    for (i = gsi_start (e->insns.g); !gsi_end_p (i); gsi_next (&i))
+    {
+        gimple* gs = gsi_stmt(i);
+        print_gimple_stmt (stdout, gs, 0, TDF_SLIM);
+    }
+
+    printf ("====             ====\n");
+}
+
+static int
+index_of (const_basic_block needle, const const_basic_block* blocks, int size)
+{
+    for (int i = 0; i < size; i++) {
+        if (blocks[i] == needle)
+            return i;
+    }
+    return -1;
+}
+
+static bool
+index_lt (const basic_block x, const basic_block y)
+{
+    return x->index < y->index;
+}
+
+/*
+ * Find masked conditions
+ */
+static int
+chase_masked_conditions (
+    basic_block block,
+    const basic_block *expr,
+    int nexpr,
+    const unsigned* flag,
+    basic_block *out,
+    int maxsize)
+{
+    edge e;
+    edge_iterator ei;
+    int n = 0;
+    FOR_EACH_EDGE (e, ei, block->preds) {
+        /*
+         * Skip any predecessor not in the expression - there might be such an
+         * edge to the enclosing expression or in the presence of loops, but
+         * masking cannot happen outside the expression itself.
+         *
+         * Expressions should generally be small enough that linear search is
+         * fast, but this could just as well be a bitmap.
+         */
+        if (index_of (e->src, expr, nexpr) == -1)
+            continue;
+
+        if (e->flags & flag[0])
+            out[n++] = e->src;
+    }
+
+    for (int pos = 0; pos < n; pos++)
+    {
+        block = out[pos];
+        FOR_EACH_EDGE (e, ei, block->preds)
+        {
+            /*
+             * Stop on previously-seen node, since all its predecessor have
+             * been added already. Maintaining it as a set also keeps the size
+             * of the output bounded to the size of the expression.
+             */
+            if (index_of (e->src, out, n) != -1)
+                continue;
+
+            if (index_of (e->src, expr, nexpr) == -1)
+                continue;
+
+            if (e->flags & flag[1])
+                out[n++] = e->src;
+
+            if (n == maxsize)
+                return -1;
+        }
+    }
+
+    return n;
+}
+
+/*
+ * Walk the blocks formed by the expression(s) and look for conditions that
+ * would mask other conditions.
+ *
+ * Consider A || B. If B is true then A will does not independently affect the
+ * decision. In a way, this is "reverse" short circuiting, and always work on
+ * the right-hand side of expressions. A || B interpreted as binary decision
+ * diagram becomes:
+ *
+ * A
+ *t|\f
+ * | \
+ * |  B
+ * |t/ \f
+ * |/   \
+ * T     F
+ *
+ * The algorithm looks for "closed paths" like the one between ATB. Masking
+ * right-hand sides happen when a block has a pair of incoming edges of the
+ * same boolean value, and there is an edge connecting the two predecessors
+ * with the *opposite* boolean value. In this particular example:
+ *
+ * A(t) -> T
+ * A(f) -> B
+ * B(t) -> T
+ *
+ * Notice that the masking block is B, and the masked block is A. It gets
+ * slightly more complicated, since masking can affect "outside" its own
+ * subexpression. For example, A || (B && C). If C is false, B is masked.
+ * However, if B && C is true, A gets masked. B && C can be determined from C,
+ * since !B would terminate and not evaluate C, so a true C would mask A.
+ *
+ * A
+ *t|\f
+ * | \
+ * |  \
+ * |   \
+ * |    B
+ * |  t/ \f
+ * |  C   |
+ * |t/ \f |
+ * |/   \ |
+ * T     F
+ *
+ * Notice how BFC forms a "closed path" on a decision false. Previous
+ * subexpressions are masked by walking the tree upwards until:
+ *  + there are no edges with the same truth value
+ *  + it reaches the root
+ * In this particular example, C would mask B (directly), and mask A because
+ * the edge AB is false.
+ */
+
+static void
+mask_dontcare_subexprs (const basic_block* blocks, gcov_type_unsigned* masks, int nblocks)
+{
+
+    memset (masks, 0, sizeof (*masks) * nblocks * 2);
+
+    #define MCDC_MAX_TERMS 64
+    basic_block eblocks[MCDC_MAX_TERMS];
+    for (int i = 0; i < nblocks; i++)
+    {
+        basic_block block = blocks[i];
+
+        if (single_pred_p (block))
+            continue;
+
+        const unsigned flags[] = {
+            EDGE_TRUE_VALUE,
+            EDGE_FALSE_VALUE,
+            EDGE_TRUE_VALUE,
+        };
+
+        for (int k = 0; k < 2; k++)
+        {
+            int n = chase_masked_conditions
+                (block, blocks, nblocks, flags + k, eblocks, MCDC_MAX_TERMS);
+
+            if (n < 2)
+                continue;
+
+            basic_block highest = eblocks[0];
+            for (int i = 1; i < n; i++)
+                if (eblocks[i]->index > highest->index)
+                    highest = eblocks[i];
+
+            const int idst = index_of (highest, blocks, nblocks);
+            gcc_assert (idst != -1);
+
+            for (int i = 0; i < n; i++) {
+                if (highest == eblocks[i])
+                    continue;
+
+                const int pos = index_of (eblocks[i], blocks, nblocks);
+                masks[2*idst + k] |= gcov_type_unsigned (1) << pos;
+            }
+        }
+    }
+
+    #undef MCDC_MAX_TERMS
+}
+
+static void
+zero_accumulator_on_function_entry (tree accumulator, basic_block block)
+{
+    edge e;
+    edge_iterator ei;
+    tree zero = build_int_cst (gcov_type_node, 0);
+    FOR_EACH_EDGE (e, ei, block->succs)
+        gsi_insert_on_edge (e, gimple_build_assign (accumulator, zero));
+}
+
+static int
+find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block post, sbitmap expr)
+{
+    gcc_assert (maxsize > 0);
+
+    edge e;
+    edge_iterator ei;
+
+    basic_block loop = pre->loop_father->header;
+    int n = 0;
+    out[n++] = pre;
+    bitmap_set_bit (expr, pre->index);
+
+    for (int pos = 0; pos < n; pos++) {
+        basic_block block = out[pos];
+
+        FOR_EACH_EDGE (e, ei, block->succs) {
+            basic_block dest = e->dest;
+            /* Skip loop edges, as they go outside the expression */
+            if (dest == loop)
+                continue;
+
+            if (dest == post)
+                continue;
+
+            if (single_succ_p (dest))
+                continue;
+
+            /* already-seen, don't re-add */
+            if (bitmap_bit_p (expr, dest->index))
+                continue;
+
+            bitmap_set_bit (expr, dest->index);
+            out[n++] = dest;
+            if (n == maxsize)
+                return n;
+        }
+    }
+
+    return n;
+}
+
+static int
+find_expr_halo (basic_block* blocks, int nblocks)
+{
+    edge e;
+    edge_iterator ei;
+    int n = 0;
+    basic_block* exits = blocks + nblocks;
+    for (int i = 0; i < nblocks; i++) {
+        FOR_EACH_EDGE (e, ei, blocks[i]->succs) {
+            if (index_of (e->dest, blocks, nblocks + n) != -1)
+                continue;
+
+            exits[n++] = e->dest;
+        }
+    }
+
+    return n;
+}
+
+/*
+ * Find and isolate the first expression between two dominators.
+ *
+ * Either block of a conditional could have more decisions and loops, so
+ * isolate the first decision by set-intersecting all paths from the
+ * post-dominator to the entry block.
+ *
+ * The function returns the number of blocks from n that make up the leading
+ * expression in prefix order (i.e. the order expected by the instrumenting
+ * code). When this function returns 0 there are no decisions between pre and
+ * post, and this segment of the CFG can safely be skipped.
+ *
+ * The post nodes can have predecessors that do not belong to this subgraph,
+ * which are skipped. This is expected, for example when there is a conditional
+ * in the else-block of a larger expression:
+ *
+ * if (A) {
+ *    if (B) {}
+ * } else {
+ *    if (C) {} else {}
+ * }
+ *
+ *           A
+ *        t / \ f
+ *         /   \
+ *        B     C
+ *       /\    / \
+ *      /  \  T   F
+ *     T    \  \ /
+ *      \   |   o
+ *       \  |  /
+ *        \ | /
+ *         \|/
+ *          E
+ *
+ * Processing [B, E) which looks like:
+ *
+ *    B
+ *   /|
+ *  / |
+ * T  |
+ *  \ /
+ *   E ----> o // predecessor outside [B, e)
+ */
+
+static void
+dfsup (sbitmap reachable, basic_block pre, basic_block sink, basic_block* stack)
+{
+    if (bitmap_bit_p (reachable, pre->index))
+        return;
+
+    edge e;
+    edge_iterator ei;
+    stack[0] = pre;
+    bitmap_set_bit (reachable, pre->index);
+
+    for (int n = 0; n >= 0; n--) {
+        FOR_EACH_EDGE (e, ei, stack[n]->preds) {
+            if (bitmap_bit_p (reachable, e->src->index))
+                continue;
+
+            if (!dominated_by_p (CDI_POST_DOMINATORS, e->src, sink))
+                continue;
+
+            bitmap_set_bit (reachable, e->src->index);
+            stack[n++] = e->src;
+        }
+    }
+}
+
+static void
+dfsup1 (sbitmap reachable, basic_block pre, basic_block post, basic_block* stack)
+{
+    if (bitmap_bit_p (reachable, pre->index))
+        return;
+
+    edge e;
+    edge_iterator ei;
+    stack[0] = pre;
+    bitmap_set_bit (reachable, pre->index);
+    bitmap_set_bit (reachable, post->index);
+
+    for (int n = 0; n >= 0; n--) {
+        FOR_EACH_EDGE (e, ei, stack[n]->preds) {
+            if (bitmap_bit_p (reachable, e->src->index))
+                continue;
+
+            bitmap_set_bit (reachable, e->src->index);
+            stack[n++] = e->src;
+        }
+    }
+}
+
+static int
+find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int maxsize)
+{
+    if (single_succ_p (pre))
+        return 0;
+
+    edge e;
+    edge_iterator ei;
+
+    const int nmax = n_basic_blocks_for_fn (cfun);
+    auto_sbitmap expr (nmax);
+    auto_sbitmap reachable (nmax);
+
+    struct loop* loop = pre->loop_father;
+    const bool dowhile = !loop_exits_from_bb_p (loop, pre);
+    if (bb_loop_header_p (pre) && !dowhile) {
+        /* if this is a do-while loop, the loop-condition goes to latch */
+        /* TODO: document why it does not apply to do-while */
+        basic_block loopexit = NULL;
+        FOR_EACH_EDGE (e, ei, pre->succs) {
+            if (loop_exit_edge_p (loop, e)) {
+                loopexit = e->dest;
+                break;
+            }
+        }
+        gcc_assert (loopexit);
+
+        dfsup1 (expr, loopexit, pre, blocks);
+        FOR_EACH_EDGE (e, ei, pre->preds)
+            if (dominated_by_p (CDI_DOMINATORS, e->src, pre))
+                bitmap_set_bit (expr, e->src->index);
+
+        basic_block b;
+        FOR_BB_BETWEEN (b, pre, post, next_bb) {
+            if (!bitmap_bit_p (expr, b->index))
+                continue;
+
+            if (single_succ_p (b)) {
+                bitmap_clear_bit (expr, b->index);
+                continue;
+            }
+
+            FOR_EACH_EDGE (e, ei, b->succs) {
+                if (!bitmap_bit_p (expr, e->dest->index)) {
+                    bitmap_clear_bit (expr, b->index);
+                    break;
+                }
+            }
+        }
+        /*
+         * The post dominator bit will be when walking the graph, but should
+         * never be in the output. The pre/entry node *must* be, but since the
+         * graph is walked "upwards" with the pre as bound, it is never
+         * included.
+         */
+        bitmap_clear_bit (expr, post->index);
+        bitmap_set_bit (expr, pre->index);
+
+        int k = 0;
+        FOR_BB_BETWEEN (b, pre, post, next_bb)
+            if (bitmap_bit_p (expr, b->index))
+                blocks[k++] = b;
+
+        return k;
+    }
+
+    int nblocks = find_expr_limits (pre, blocks, maxsize, post, expr);
+
+    // <-- only need this bit!!
+    // problem is conditional-in-loop because nothing prunes children
+    if (nblocks == 1)
+        return 1;
+
+    FOR_EACH_EDGE (e, ei, post->preds) {
+        if (!dominated_by_p (CDI_DOMINATORS, e->src, pre))
+            continue;
+
+        bitmap_clear (reachable);
+        bitmap_set_bit (reachable, pre->index);
+        dfsup (reachable, e->src, post, blocks + nblocks);
+        bitmap_and (expr, expr, reachable);
+    }
+
+    int k = 0;
+    for (int i = 0; i < nblocks; i++)
+        if (bitmap_bit_p (expr, blocks[i]->index))
+            blocks[k++] = blocks[i];
+    nblocks = k;
+
+    if (nblocks < 2)
+        return nblocks;
+
+    /* record all nodes immediately outside of */
+    int nexits = find_expr_halo (blocks, nblocks);
+    if (nexits == 2)
+        return nblocks;
+
+    /* then, dfs + intersect from there */
+    basic_block *exits = blocks + nblocks;
+    for (int i = 0; i < nexits; i++) {
+        FOR_EACH_EDGE (e, ei, exits[i]->preds) {
+            if (!dominated_by_p (CDI_DOMINATORS, e->src, pre))
+                continue;
+
+            bitmap_clear (reachable);
+            dfsup1 (reachable, e->src, pre, exits + nexits);
+            bitmap_and (expr, expr, reachable);
+        }
+    }
+
+    k = 0;
+    for (int i = 0; i < nblocks; i++)
+        if (bitmap_bit_p (expr, blocks[i]->index))
+            blocks[k++] = blocks[i];
+    nblocks = k;
+
+    return nblocks;
+}
+
+/*
+ * This is a (slightly) modified version of the algorithm in Whalen, Heimdahl,
+ * De Silva "Efficient Test Coverage Measurement for MC/DC". Their algorithm
+ * work on ASTs, but the instrumentation work on control flow graphs.
+ *
+ * The instrumentation relies heavily on all decision with the same boolean
+ * value have the same *index* in the successor vector. If this is not the
+ * case, some other method must be used to determine which successor correspond
+ * to which boolean value.
+ *
+ * The algorithm does not consider the symbol of a condition, only its
+ * position, which means !A || (!B && A) is considered 3-term conditional.
+ *
+ * The algorithm work recognises three main graph shapes:
+ * * The loop
+ * * Nested expressions
+ * * Conditionals
+ *
+ * For all cases the high-level approach is similar: find the post dominator to
+ * the entry node, and do a depth-first search for the dominator. The entry
+ * and exit might be a subgraph of the function.
+ *
+ * If the dominator is a loop, find all nodes in the expression *before* the
+ * loop entry, which makes up the the loop condition. Then, recursively process
+ * the loop body, before continuing from the dominator.
+ *
+ * Otherwise, isolate the boolean expression by searching from the post
+ * dominator feeding the result into set intersections. The only blocks
+ * remaining are the ones in common in all paths, which are the blocks that
+ * make up the first decision. If there are sub expressions (with decisions)
+ * left, the function is called recursively to sort them out.
+ *
+ * TODO: describe output
+ */
+
+static void
+find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
+{
+    edge e;
+    edge_iterator ei;
+
+    basic_block pre;
+    basic_block post;
+    for (pre = entry ;; pre = post) {
+        if (pre == exit)
+            break;
+        if (bitmap_bit_p (ctx.seen, pre->index))
+            break;
+
+        post = get_immediate_dominator (CDI_POST_DOMINATORS, pre);
+        int nblocks = find_first_expr (pre, post, ctx.blocks, ctx.maxelems);
+        if (nblocks == 0)
+            continue;
+
+        // TODO: document
+        std::sort(ctx.blocks, ctx.blocks + nblocks, index_lt);
+        basic_block last = ctx.blocks[nblocks - 1];
+        FOR_EACH_EDGE (e, ei, last->succs)
+            ctx.blocks[nblocks++] = e->dest;
+        ctx.commit (pre, nblocks);
+
+        FOR_EACH_EDGE (e, ei, last->succs)
+            find_conditions_between (ctx, e->dest, post);
+    }
+}
+
+int
+find_condition_blocks (
+    basic_block entry,
+    basic_block exit,
+    basic_block *blocks,
+    int *sizes,
+    int maxsize)
+{
+    record_loop_exits ();
+    if (!dom_info_available_p (CDI_POST_DOMINATORS))
+        calculate_dominance_info (CDI_POST_DOMINATORS);
+
+    if (!dom_info_available_p (CDI_DOMINATORS))
+        calculate_dominance_info (CDI_DOMINATORS);
+
+    mcdc_ctx ctx (maxsize);
+    ctx.blocks = blocks;
+    ctx.sizes = sizes + 1;
+    ctx.maxelems = maxsize;
+    sizes[0] = sizes[1] = 0;
+    find_conditions_between (ctx, entry, exit);
+
+    /* partial sum */
+    for (int i = 0; i < ctx.exprs; ++i)
+        sizes[i + 1] += sizes[i];
+
+    return ctx.exprs;
+}
+
+static void
+emit_bitexpr (edge e, tree lhs, tree op1, tree_code op, tree op2)
+{
+    tree tmp;
+    gassign *read;
+    gassign *bitw;
+    gassign *write;
+    /*
+     * insert lhs = op1 <bit-op> op2, e.g. lhs = op1 | op2
+     */
+    tmp   = make_temp_ssa_name  (gcov_type_node, NULL, "__mcdc_tmp");
+    read  = gimple_build_assign (tmp, op1);
+    tmp   = make_temp_ssa_name  (gcov_type_node, NULL, "__mcdc_tmp");
+    bitw  = gimple_build_assign (tmp, op, gimple_assign_lhs (read), op2);
+    write = gimple_build_assign (lhs, gimple_assign_lhs (bitw));
+
+    gsi_insert_on_edge (e, read);
+    gsi_insert_on_edge (e, bitw);
+    gsi_insert_on_edge (e, write);
+}
+
+int instrument_decision (basic_block *blocks, int nblocks, int idx_decision)
+{
+    gcc_assert (nblocks > 2);
+
+    tree accu[2] = {
+        build_decl (
+            UNKNOWN_LOCATION,
+            VAR_DECL,
+            get_identifier("__gcov_mcdc_accu_true"),
+            gcov_type_node
+        ),
+        build_decl (
+            UNKNOWN_LOCATION,
+            VAR_DECL,
+            get_identifier("__gcov_mcdc_accu_false"),
+            gcov_type_node
+        ),
+    };
+    zero_accumulator_on_function_entry
+        (accu[0], ENTRY_BLOCK_PTR_FOR_FN (cfun));
+    zero_accumulator_on_function_entry
+        (accu[1], ENTRY_BLOCK_PTR_FOR_FN (cfun));
+
+    gcov_type_unsigned  masks_static[64];
+    gcov_type_unsigned *masks_dynamic = NULL;
+    gcov_type_unsigned *masks;
+    gcc_assert (sizeof (*masks) == sizeof (uint64_t));
+    if ((size_t)nblocks * 2 < sizeof (masks_static) / sizeof (masks_static[0]))
+      {
+        masks = masks_static;
+      }
+    else
+      {
+        masks_dynamic = XNEWVEC (gcov_type_unsigned, nblocks * 2);
+        masks = masks_dynamic;
+      }
+
+    mask_dontcare_subexprs (blocks, masks, nblocks);
+    int condition = 0;
+
+    /* TODO: -2 because of true/false exit blocks */
+    for (int iblock = 0; iblock < nblocks - 2; iblock++)
+    {
+        basic_block block = blocks[iblock];
+
+        if (single_succ_p (block))
+            continue;
+
+        for (int k = 0; k < 2; k++)
+        {
+            edge e = EDGE_SUCC (block, k);
+            const int t = !!!(e->flags & EDGE_TRUE_VALUE);
+
+            /* accu[k] |= condition[i] */
+            tree rhs = build_int_cst (gcov_type_node, 1ULL << condition);
+            emit_bitexpr (e, accu[t], accu[t], BIT_IOR_EXPR, rhs);
+
+            if (masks[2*condition + t] == 0)
+                continue;
+
+            /* accu[k] &= ~mask[k] */
+            gcov_type_unsigned mask = masks[2*condition + t];
+            for (int j = 0; j < 2; j++) {
+                rhs = build_int_cst (gcov_type_node, ~mask);
+                emit_bitexpr (e, accu[j], accu[j], BIT_AND_EXPR, rhs);
+            }
+        }
+
+        condition++;
+    }
+
+    edge e;
+    edge_iterator ei;
+    basic_block exit = EXIT_BLOCK_PTR_FOR_FN (cfun);
+    FOR_EACH_EDGE (e, ei, exit->preds)
+    {
+        /* independent[k] |= accu[k] */
+        for (int k = 0; k < 2; k++) {
+            tree ref = tree_coverage_counter_ref (GCOV_COUNTER_MCDC, 2*idx_decision + k);
+
+            tree tmp = make_temp_ssa_name (gcov_type_node, NULL, "__mcdc_tmp");
+            gassign *read = gimple_build_assign (tmp, ref);
+            gsi_insert_on_edge (e, read);
+
+            tree rop = gimple_assign_lhs (read);
+            emit_bitexpr (e, unshare_expr (ref), accu[k], BIT_IOR_EXPR, rop);
+        }
+    }
+
+    free (masks_dynamic);
+    return condition;
+}
 
 /* Do initialization work for the edge profiler.  */
 
@@ -761,7 +1510,7 @@ tree_profiling (void)
 	      gimple *stmt = gsi_stmt (gsi);
 	      if (is_gimple_call (stmt))
 		update_stmt (stmt);
-	    }
+        }
 	}
 
       /* re-merge split blocks.  */

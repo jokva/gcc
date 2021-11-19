@@ -102,6 +102,7 @@ static int total_num_passes;
 static int total_num_times_called;
 static int total_hist_br_prob[20];
 static int total_num_branches;
+static int total_num_mcdc;
 
 /* Helper function to update gcov_working_sets.  */
 
@@ -119,6 +120,9 @@ static void find_spanning_tree (struct edge_list *);
    F is the first insn of the chain.
    NUM_BLOCKS is the number of basic blocks found in F.  */
 
+int find_condition_blocks (basic_block, basic_block, basic_block*, int*, int);
+int instrument_decision (basic_block*, int, int);
+
 static unsigned
 instrument_edges (struct edge_list *el)
 {
@@ -130,6 +134,15 @@ instrument_edges (struct edge_list *el)
     {
       edge e;
       edge_iterator ei;
+
+      // printf("== basic-block %d ==\n", bb->index);
+      // printf("=  stmt            =\n");
+      // printf("=                  =\n");
+      // gimple_stmt_iterator gsi;
+      // for (gsi = gsi_start_bb (bb); !gsi_end_p (gsi); gsi_next (&gsi)) {
+      //     gimple *stmt = gsi_stmt(gsi);
+      //     print_gimple_stmt (stdout, stmt, 0, TDF_SLIM);
+      // }
 
       FOR_EACH_EDGE (e, ei, bb->succs)
 	{
@@ -1345,13 +1358,53 @@ branch_prob (bool thunk)
 
   remove_fake_edges ();
 
+  if (profile_condition_flag || profile_arc_flag)
+      gimple_init_gcov_profiler ();
+
+  if (profile_condition_flag)
+  {
+    basic_block entry = ENTRY_BLOCK_PTR_FOR_FN (cfun)->next_bb;
+    basic_block exit  = EXIT_BLOCK_PTR_FOR_FN (cfun);
+
+    /*
+     * TODO: document
+     * TODO: clean up naming
+     * TODO: use static buffers for small functions
+     */
+    const int max_blocks = 5 * n_basic_blocks_for_fn (cfun);
+    int *sizes = XNEWVEC (int, max_blocks);
+    basic_block *blocks = XNEWVEC (basic_block, max_blocks);
+
+    int nconds = find_condition_blocks
+        (entry, exit, blocks, sizes, max_blocks);
+    total_num_mcdc += nconds;
+
+    if (nconds > 0 && coverage_counter_alloc (GCOV_COUNTER_MCDC, 2 * nconds))
+    {
+      gcov_position_t offset = gcov_write_tag (GCOV_TAG_MCDC);
+      for (int i = 0; i < nconds; ++i)
+      {
+        int idx = sizes[i];
+        int len = sizes[i + 1] - idx;
+        int terms = instrument_decision (blocks + idx, len, i);
+        if (terms > 0)
+        {
+          gcov_write_unsigned (blocks[idx]->index);
+          gcov_write_unsigned (terms);
+        }
+      }
+      gcov_write_length (offset);
+    }
+
+    free (blocks);
+    free (sizes);
+  }
+
   /* For each edge not on the spanning tree, add counting code.  */
   if (profile_arc_flag
       && coverage_counter_alloc (GCOV_COUNTER_ARCS, num_instrumented))
     {
       unsigned n_instrumented;
-
-      gimple_init_gcov_profiler ();
 
       n_instrumented = instrument_edges (el);
 
@@ -1359,15 +1412,15 @@ branch_prob (bool thunk)
 
       if (flag_profile_values)
 	instrument_values (values);
-
-      /* Commit changes done by instrumentation.  */
-      gsi_commit_edge_inserts ();
     }
 
   free_aux_for_edges ();
 
   values.release ();
   free_edge_list (el);
+  /* Commit changes done by instrumentation.  */
+  gsi_commit_edge_inserts ();
+
   coverage_end_function (lineno_checksum, cfg_checksum);
   if (flag_branch_probabilities && profile_info)
     {
@@ -1498,6 +1551,7 @@ init_branch_prob (void)
   total_num_passes = 0;
   total_num_times_called = 0;
   total_num_branches = 0;
+  total_num_mcdc = 0;
   for (i = 0; i < 20; i++)
     total_hist_br_prob[i] = 0;
 }
@@ -1537,5 +1591,7 @@ end_branch_prob (void)
 		     (total_hist_br_prob[i] + total_hist_br_prob[19-i]) * 100
 		     / total_num_branches, 5*i, 5*i+5);
 	}
+
+      // TODO: add mcdc dump too
     }
 }
