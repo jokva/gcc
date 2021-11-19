@@ -131,6 +131,15 @@ instrument_edges (struct edge_list *el)
       edge e;
       edge_iterator ei;
 
+      // printf("== basic-block %d ==\n", bb->index);
+      // printf("=  stmt            =\n");
+      // printf("=                  =\n");
+      // gimple_stmt_iterator gsi;
+      // for (gsi = gsi_start_bb (bb); !gsi_end_p (gsi); gsi_next (&gsi)) {
+      //     gimple *stmt = gsi_stmt(gsi);
+      //     print_gimple_stmt (stdout, stmt, 0, TDF_SLIM);
+      // }
+
       FOR_EACH_EDGE (e, ei, bb->succs)
 	{
 	  struct edge_profile_info *inf = EDGE_INFO (e);
@@ -261,8 +270,8 @@ find_working_set (unsigned pct_times_10)
   return &gcov_working_sets[i - 1];
 }
 
-/* Computes hybrid profile for all matching entries in da_file.  
-   
+/* Computes hybrid profile for all matching entries in da_file.
+
    CFG_CHECKSUM is the precomputed checksum for the CFG.  */
 
 static gcov_type *
@@ -510,7 +519,7 @@ compute_frequency_overlap (void)
 }
 
 /* Compute the branch probabilities for the various branches.
-   Annotate them accordingly.  
+   Annotate them accordingly.
 
    CFG_CHECKSUM is the precomputed checksum for the CFG.  */
 
@@ -843,7 +852,7 @@ compute_branch_probabilities (unsigned cfg_checksum, unsigned lineno_checksum)
 }
 
 /* Load value histograms values whose description is stored in VALUES array
-   from .gcda file.  
+   from .gcda file.
 
    CFG_CHECKSUM is the precomputed checksum for the CFG.  */
 
@@ -1186,7 +1195,7 @@ branch_prob (void)
 
   /* Compute two different checksums. Note that we want to compute
      the checksum in only once place, since it depends on the shape
-     of the control flow which can change during 
+     of the control flow which can change during
      various transformations.  */
   cfg_checksum = coverage_compute_cfg_checksum (cfun);
   lineno_checksum = coverage_compute_lineno_checksum ();
@@ -1297,10 +1306,10 @@ branch_prob (void)
 
   remove_fake_edges ();
 
-  if (profile_mcdc_flag || profile_arc_flag)
+  if (profile_condition_flag || profile_arc_flag)
       gimple_init_gcov_profiler ();
 
-  if (profile_mcdc_flag)
+  if (profile_condition_flag)
   {
     basic_block entry = ENTRY_BLOCK_PTR_FOR_FN (cfun)->next_bb;
     basic_block exit  = EXIT_BLOCK_PTR_FOR_FN (cfun);
@@ -1544,5 +1553,7 @@ end_branch_prob (void)
 		     (total_hist_br_prob[i] + total_hist_br_prob[19-i]) * 100
 		     / total_num_branches, 5*i, 5*i+5);
 	}
+
+      // TODO: add mcdc dump too
     }
 }

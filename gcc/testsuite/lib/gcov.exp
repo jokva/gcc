@@ -261,6 +261,272 @@ proc verify-conditions { testname testcase file } {
 }
 
 #
+# verify-conditions -- check that conditions are checked as expected
+#
+# TESTNAME is the name of the test, including unique flags.
+# TESTCASE is the name of the test file.
+# FILE is the name of the gcov output file.
+#
+# Checks are based on comments in the source file. Condition coverage comes
+# with with two types of output, a summary and a list of the uncovered
+# conditions. Both must be checked to pass the test
+#
+# To check for conditions, add a comment the line of a conditional:
+# /* conditions(n/m) true(0 1) false(1) */
+#
+# where n/m are the covered and total conditions in the expression. The true()
+# and false() take the indices expected *not* covered.
+#
+# This means that all coverage statements should have been seen:
+# /* conditions(end) */
+#
+# If all conditions are covered i.e. n == m, then conditions(end) can be
+# omitted. If either true() or false() are empty they can be omitted too.
+#
+proc verify-conditions { testname testcase file } {
+    set failed 0
+    set shouldt ""
+    set shouldf ""
+    set shouldall ""
+    set fd [open $file r]
+    set n 0
+    while {[gets $fd line] >= 0} {
+        regexp "^\[^:\]+: *(\[0-9\]+):" "$line" all n
+        set prefix "$testname line $n"
+
+        if {![regexp "condition" $line]} {
+            continue
+        }
+
+        # Missing coverage for both true and false will cause a failure, but
+        # only count it once for the report.
+        set ok 1
+        if [regexp {conditions\(([0-9a-z/]+)\)} "$line" all e] {
+
+            # *Very* coarse sanity check: conditions() should either be end or
+            # n/m, anything else means a buggy test case. end is optional for
+            # cases where all conditions are covered, since it only expects a
+            # single line of output.
+            if {($e == "end" || [regexp {\d+/\d+} "$e"]) == 0} {
+                fail "$prefix: expected conditions (n/m) or (end); was ($e)"
+                incr failed
+                continue
+            }
+
+            if {[llength $shouldt] != 0} {
+                fail "$prefix: expected uncovered (true) for terms $shouldt"
+                set ok 0
+            }
+
+            if {[llength $shouldf] != 0} {
+                fail "$prefix: expected uncovered (false) for terms $shouldf"
+                set ok 0
+            }
+
+            if {$shouldall ne ""} {
+                fail "$prefix: coverage summary not found; expected $shouldall"
+                set ok 0
+            }
+
+            # Errors have been reported, so reset the state
+            set shouldt ""
+            set shouldf ""
+            set shouldall ""
+            set newt ""
+            set newf ""
+
+            if [regexp {(\d+)/(\d+)} "$e" all i k] {
+                regexp {true\(([0-9 ]+)\)}  "$line" all newt
+                regexp {false\(([0-9 ]+)\)} "$line" all newf
+
+                # Sanity check - if the true() and false() vectors should have
+                # m-n elements to cover all uncovered conditions. Because of
+                # masking it can sometimes be surprising what terms are
+                # independent, so this makes for more robust test at the cost
+                # of being slightly more annoying to write.
+                set nterms [expr [llength $newt] + [llength $newf]]
+                set nexpected [expr {$k - $i}]
+                if {$nterms != $nexpected} {
+                    fail "$prefix: expected $nexpected uncovered terms; got $nterms"
+                    set ok 0
+                }
+                set shouldall $e
+                set shouldt $newt
+                set shouldf $newf
+            } elseif {$e == "end"} {
+                # no-op, everything has already been re-set
+            } else {
+                # this should be unreachable, 
+                fail "$prefix: unhandled control ($e), should be unreachable"
+                set ok 0
+            }
+        } elseif [regexp {condition +(\d+) not covered \(true\)} "$line" all cond] {
+            set i [lsearch $shouldt $cond]
+            if {$i != -1} {
+                set shouldt [lreplace $shouldt $i $i]
+            } else {
+                fail "$testname line $n: unexpected uncovered term $cond (true)"
+                set ok 0
+            }
+        } elseif [regexp {condition +(\d+) not covered \(false\)} "$line" all cond] {
+            set i [lsearch $shouldf $cond]
+            if {$i != -1} {
+                set shouldf [lreplace $shouldf $i $i]
+            } else {
+                fail "$testname line $n: unexpected uncovered term $cond (false)"
+                set ok 0
+            }
+        } elseif [regexp {conditions covered (\d+/\d+)} "$line" all cond] {
+            if {$cond == $shouldall} {
+                set shouldall ""
+            } else {
+                fail "$testname line $n: unexpected summary $cond"
+                set ok 0
+            }
+        }
+
+        if {$ok != 1} {
+            incr failed
+        }
+    }
+    close $fd
+    return $failed
+}
+
+#
+# verify-conditions -- check that conditions are checked as expected
+#
+# TESTNAME is the name of the test, including unique flags.
+# TESTCASE is the name of the test file.
+# FILE is the name of the gcov output file.
+#
+# Checks are based on comments in the source file. Condition coverage comes
+# with with two types of output, a summary and a list of the uncovered
+# conditions. Both must be checked to pass the test
+#
+# To check for conditions, add a comment the line of a conditional:
+# /* conditions(n/m) true(0 1) false(1) */
+#
+# where n/m are the covered and total conditions in the expression. The true()
+# and false() take the indices expected *not* covered.
+#
+# This means that all coverage statements should have been seen:
+# /* conditions(end) */
+#
+# If all conditions are covered i.e. n == m, then conditions(end) can be
+# omitted. If either true() or false() are empty they can be omitted too.
+#
+proc verify-conditions { testname testcase file } {
+    set failed 0
+    set shouldt ""
+    set shouldf ""
+    set shouldall ""
+    set fd [open $file r]
+    set n 0
+    while {[gets $fd line] >= 0} {
+        regexp "^\[^:\]+: *(\[0-9\]+):" "$line" all n
+        set prefix "$testname line $n"
+
+        if {![regexp "condition" $line]} {
+            continue
+        }
+
+        # Missing coverage for both true and false will cause a failure, but
+        # only count it once for the report.
+        set ok 1
+        if [regexp {conditions\(([0-9a-z/]+)\)} "$line" all e] {
+
+            # *Very* coarse sanity check: conditions() should either be end or
+            # n/m, anything else means a buggy test case. end is optional for
+            # cases where all conditions are covered, since it only expects a
+            # single line of output.
+            if {($e == "end" || [regexp {\d+/\d+} "$e"]) == 0} {
+                fail "$prefix: expected conditions (n/m) or (end); was ($e)"
+                incr failed
+                continue
+            }
+
+            if {[llength $shouldt] != 0} {
+                fail "$prefix: expected uncovered (true) for terms $shouldt"
+                set ok 0
+            }
+
+            if {[llength $shouldf] != 0} {
+                fail "$prefix: expected uncovered (false) for terms $shouldf"
+                set ok 0
+            }
+
+            if {$shouldall ne ""} {
+                fail "$prefix: coverage summary not found; expected $shouldall"
+                set ok 0
+            }
+
+            # Errors have been reported, so reset the state
+            set shouldt ""
+            set shouldf ""
+            set shouldall ""
+            set newt ""
+            set newf ""
+
+            if [regexp {(\d+)/(\d+)} "$e" all i k] {
+                regexp {true\(([0-9 ]+)\)}  "$line" all newt
+                regexp {false\(([0-9 ]+)\)} "$line" all newf
+
+                # Sanity check - if the true() and false() vectors should have
+                # m-n elements to cover all uncovered conditions. Because of
+                # masking it can sometimes be surprising what terms are
+                # independent, so this makes for more robust test at the cost
+                # of being slightly more annoying to write.
+                set nterms [expr [llength $newt] + [llength $newf]]
+                set nexpected [expr {$k - $i}]
+                if {$nterms != $nexpected} {
+                    fail "$prefix: expected $nexpected uncovered terms; got $nterms"
+                    set ok 0
+                }
+                set shouldall $e
+                set shouldt $newt
+                set shouldf $newf
+            } elseif {$e == "end"} {
+                # no-op, everything has already been re-set
+            } else {
+                # this should be unreachable, 
+                fail "$prefix: unhandled control ($e), should be unreachable"
+                set ok 0
+            }
+        } elseif [regexp {condition +(\d+) not covered \(true\)} "$line" all cond] {
+            set i [lsearch $shouldt $cond]
+            if {$i != -1} {
+                set shouldt [lreplace $shouldt $i $i]
+            } else {
+                fail "$testname line $n: unexpected uncovered term $cond (true)"
+                set ok 0
+            }
+        } elseif [regexp {condition +(\d+) not covered \(false\)} "$line" all cond] {
+            set i [lsearch $shouldf $cond]
+            if {$i != -1} {
+                set shouldf [lreplace $shouldf $i $i]
+            } else {
+                fail "$testname line $n: unexpected uncovered term $cond (false)"
+                set ok 0
+            }
+        } elseif [regexp {conditions covered (\d+/\d+)} "$line" all cond] {
+            if {$cond == $shouldall} {
+                set shouldall ""
+            } else {
+                fail "$testname line $n: unexpected summary $cond"
+                set ok 0
+            }
+        }
+
+        if {$ok != 1} {
+            incr failed
+        }
+    }
+    close $fd
+    return $failed
+}
+
+#
 # verify-calls -- check that call return percentages are as expected
 #
 # TESTNAME is the name of the test, including unique flags.
