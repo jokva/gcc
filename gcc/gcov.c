@@ -72,6 +72,7 @@ using namespace std;
 struct function_info;
 struct block_info;
 struct source_info;
+class modified_condition_decision_info;
 
 /* Describes an arc between two basic blocks.  */
 
@@ -114,6 +115,30 @@ typedef struct arc_info
   struct arc_info *pred_next;
 } arc_t;
 
+class modified_condition_decision_info
+{
+public:
+  modified_condition_decision_info ();
+
+  int popcount () const;
+
+  gcov_type_unsigned truev;
+  gcov_type_unsigned falsev;
+
+  unsigned n_terms;
+  // TODO: remove, can read n-terms instead
+  unsigned is_decision : 1;
+};
+
+modified_condition_decision_info::modified_condition_decision_info ():
+  truev (0), falsev (0), n_terms (0), is_decision (0)
+{
+}
+
+int modified_condition_decision_info::popcount () const {
+    return __builtin_popcountll (truev) + __builtin_popcountll (falsev);
+}
+
 /* Describes a basic block. Contains lists of arcs to successor and
    predecessor blocks.  */
 
@@ -141,6 +166,8 @@ typedef struct block_info
 
   /* Block is a landing pad for longjmp or throw.  */
   unsigned is_nonlocal_return : 1;
+
+  modified_condition_decision_info mcdc;
 
   union
   {
@@ -191,6 +218,8 @@ typedef struct function_info
   unsigned num_blocks;
   unsigned blocks_executed;
 
+  vector<modified_condition_decision_info*> mcdcs;
+
   /* Raw arc coverage counts.  */
   gcov_type *counts;
   unsigned num_counts;
@@ -216,6 +245,9 @@ typedef struct coverage_info
   int branches;
   int branches_executed;
   int branches_taken;
+
+  int conditions;
+  int conditions_covered;
 
   int calls;
   int calls_executed;
@@ -333,6 +365,10 @@ static int multiple_files = 0;
 
 static int flag_branches = 0;
 
+/* Output modified condition/decision coverage */
+
+static int flag_conditions = 0;
+
 /* Show unconditional branches too.  */
 static int flag_unconditional = 0;
 
@@ -418,12 +454,14 @@ static void solve_flow_graph (function_t *);
 static void find_exception_blocks (function_t *);
 static void add_branch_counts (coverage_t *, const arc_t *);
 static void add_line_counts (coverage_t *, function_t *);
+static void add_condition_counts (coverage_info *, const block_info *);
 static void executed_summary (unsigned, unsigned);
 static void function_summary (const coverage_t *, const char *);
 static const char *format_gcov (gcov_type, gcov_type, int);
 static void accumulate_line_counts (source_t *);
 static void output_gcov_file (const char *, source_t *);
 static int output_branch_count (FILE *, int, const arc_t *);
+static void output_mcdc_count (FILE *, const block_info *);
 static void output_lines (FILE *, const source_t *);
 static char *make_gcov_file_name (const char *, const char *);
 static char *mangle_name (const char *, char *);
@@ -659,6 +697,7 @@ print_usage (int error_p)
   fnotice (file, "  -b, --branch-probabilities      Include branch probabilities in output\n");
   fnotice (file, "  -c, --branch-counts             Output counts of branches taken\n\
                                     rather than percentages\n");
+  fnotice (file, "  -C, --conditions                Output modified condition/decision coverage.\n");
   fnotice (file, "  -d, --display-progress          Display progress information\n");
   fnotice (file, "  -f, --function-summaries        Output summaries for each function\n");
   fnotice (file, "  -h, --help                      Print this help, then exit\n");
@@ -701,6 +740,7 @@ static const struct option options[] =
   { "all-blocks",           no_argument,       NULL, 'a' },
   { "branch-probabilities", no_argument,       NULL, 'b' },
   { "branch-counts",        no_argument,       NULL, 'c' },
+  { "conditions",           no_argument,       NULL, 'C' },
   { "intermediate-format",  no_argument,       NULL, 'i' },
   { "no-output",            no_argument,       NULL, 'n' },
   { "long-file-names",      no_argument,       NULL, 'l' },
@@ -724,7 +764,7 @@ process_args (int argc, char **argv)
 {
   int opt;
 
-  const char *opts = "abcdfhilmno:prs:uvx";
+  const char *opts = "abcCdfhilmno:prs:uvx";
   while ((opt = getopt_long (argc, argv, opts, options, NULL)) != -1)
     {
       switch (opt)
@@ -737,6 +777,9 @@ process_args (int argc, char **argv)
 	  break;
 	case 'c':
 	  flag_counts = 1;
+	  break;
+	case 'C':
+	  flag_conditions = 1;
 	  break;
 	case 'f':
 	  flag_function_summary = 1;
@@ -894,7 +937,7 @@ process_file (const char *file_name)
 	  unsigned line = fn->line;
 	  unsigned block_no;
 	  function_t *probe, **prev;
-	  
+
 	  /* Now insert it into the source file's list of
 	     functions. Normally functions will be encountered in
 	     ascending order, so a simple scan is quick.  Note we're
@@ -1269,7 +1312,7 @@ find_source (const char *file_name)
 
   /* Resort the name map.  */
   qsort (names, n_names, sizeof (*names), name_sort);
-  
+
  check_date:
   if (sources[idx].file_time > bbg_file_time)
     {
@@ -1456,6 +1499,28 @@ read_graph_file (void)
 		  }
 	    }
 	}
+      else if (fn && tag == GCOV_TAG_MCDC)
+	{
+        unsigned num_dests = GCOV_TAG_MCDC_NUM (length);
+
+        if (!fn->mcdcs.empty ())
+            fnotice (stderr, "%s:already seen mcdcs for '%s'\n",
+                    bbg_file_name, fn->name);
+        else
+            fn->mcdcs.resize (num_dests);
+
+        for (unsigned i = 0; i < num_dests; ++i) {
+            unsigned idx = gcov_read_unsigned ();
+
+            if (idx >= fn->num_blocks)
+                goto corrupt;
+
+            modified_condition_decision_info *info = &fn->blocks[idx].mcdc;
+            info->is_decision = 1;
+            info->n_terms = gcov_read_unsigned ();
+            fn->mcdcs[i] = info;
+        }
+	}
       else if (fn && tag == GCOV_TAG_LINES)
 	{
 	  unsigned blockno = gcov_read_unsigned ();
@@ -1607,6 +1672,20 @@ read_count_file (function_t *fns)
 	      goto cleanup;
 	    }
 	}
+      else if (tag == GCOV_TAG_FOR_COUNTER (GCOV_COUNTER_MCDC) && fn)
+    {
+          if (length != GCOV_TAG_COUNTER_LENGTH (2 * fn->mcdcs.size ()))
+              goto mismatch;
+
+          if (length > 0)
+          {
+            for (ix = 0; ix != fn->mcdcs.size (); ix++)
+            {
+              fn->mcdcs[ix]->truev  |= gcov_read_counter ();
+              fn->mcdcs[ix]->falsev |= gcov_read_counter ();
+            }
+          }
+    }
       else if (tag == GCOV_TAG_FOR_COUNTER (GCOV_COUNTER_ARCS) && fn)
 	{
 	  if (length != GCOV_TAG_COUNTER_LENGTH (fn->num_counts))
@@ -1948,6 +2027,13 @@ add_branch_counts (coverage_t *coverage, const arc_t *arc)
     }
 }
 
+static void
+add_condition_counts (coverage_info *coverage, const block_info *block)
+{
+  coverage->conditions += 2 * block->mcdc.n_terms;
+  coverage->conditions_covered += block->mcdc.popcount ();
+}
+
 /* Format a GCOV_TYPE integer as either a percent ratio, or absolute
    count.  If dp >= 0, format TOP/BOTTOM * 100 to DP decimal places.
    If DP is zero, no decimal point is printed. Only print 100% when
@@ -2041,7 +2127,13 @@ function_summary (const coverage_t *coverage, const char *title)
 		 coverage->calls);
       else
 	fnotice (stdout, "No calls\n");
+
     }
+
+  if (flag_conditions)
+      fnotice (stdout, "Conditions covered:%s of %d\n",
+        format_gcov (coverage->conditions_covered, coverage->conditions, 2),
+        coverage->conditions);
 }
 
 /* Canonicalize the filename NAME by canonicalizing directory
@@ -2297,7 +2389,7 @@ add_line_counts (coverage_t *coverage, function_t *fn)
 
       if (!ix || ix + 1 == fn->num_blocks)
 	/* Entry or exit block */;
-      else if (flag_all_blocks)
+      else if (flag_all_blocks || flag_conditions)
 	{
 	  line_t *block_line = line;
 
@@ -2306,6 +2398,9 @@ add_line_counts (coverage_t *coverage, function_t *fn)
 
 	  block->chain = block_line->u.blocks;
 	  block_line->u.blocks = block;
+
+      if (coverage)
+        add_condition_counts (coverage, block);
 	}
       else if (flag_branches)
 	{
@@ -2343,7 +2438,7 @@ accumulate_line_counts (source_t *src)
 
   for (ix = src->num_lines, line = src->lines; ix--; line++)
     {
-      if (!flag_all_blocks)
+      if (!flag_all_blocks && !flag_conditions)
 	{
 	  arc_t *arc, *arc_p, *arc_n;
 
@@ -2411,6 +2506,17 @@ accumulate_line_counts (source_t *src)
 	    src->coverage.lines_executed++;
 	}
     }
+}
+
+static void
+output_mcdc_count (FILE *gcov_file, const block_info *info)
+{
+    printf ("MCDC terms: %d\n", info->mcdc.n_terms);
+    if (info->mcdc.n_terms <= 0)
+        return;
+    int expected = 2 * info->mcdc.n_terms;
+    int got = info->mcdc.popcount ();
+    fnotice (gcov_file, "MCDC: (%d/%d)\n", got, expected);
 }
 
 /* Output information about ARC number IX.  Returns nonzero if
@@ -2582,8 +2688,25 @@ output_lines (FILE *gcov_file, const source_t *src)
 	      if (flag_branches)
 		for (arc = block->succ; arc; arc = arc->succ_next)
 		  jx += output_branch_count (gcov_file, jx, arc);
+
+        if (flag_conditions)
+          output_mcdc_count (gcov_file, block);
 	    }
 	}
+      else if (flag_conditions)
+    {
+        block_t *block;
+        arc_t *arc;
+        int jx;
+        for (jx = 0, block = line->u.blocks; block; block = block->chain)
+	    {
+            if (flag_branches) {
+                for (arc = block->succ; arc; arc = arc->succ_next)
+                    jx += output_branch_count (gcov_file, jx, arc);
+            }
+            output_mcdc_count (gcov_file, block);
+        }
+    }
       else if (flag_branches)
 	{
 	  int ix;

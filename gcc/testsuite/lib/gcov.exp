@@ -226,6 +226,40 @@ proc verify-branches { testname testcase file } {
     return $failed
 }
 
+proc verify-conditions { testname testcase file } {
+    set failed 0
+    set shouldbe ""
+    set fd [open $file r]
+    set n 0
+    while { [gets $fd line] >= 0 } {
+	regexp "^\[^:\]+: *(\[0-9\]+):" "$line" all n
+	if [regexp "condition" $line] {
+	    verbose "Processing condition/decision line $n: $line" 3
+	    if [regexp "conditions\\((\[0-9 \]+/\[0-9 \]+)\\)" "$line" all new_shouldbe] {
+		# All percentages in the current list should have been seen.
+		if {[llength $shouldbe] != 0} {
+		    fail "$testname line $n: expected condition ratios not found: $shouldbe"
+		    incr failed
+		    set shouldbe ""
+		}
+		set shouldbe $new_shouldbe
+		}
+	    } elseif [regexp "MCDC .*\\((\[0-9\]+/\[0-9\]+)\\)" "$line" \
+			all taken] {
+		# If this percentage is one to check for then remove it
+		# from the list.  It's normal to ignore some reports.
+        if {$taken != $shouldbe} {
+            fail "$testname line $n: expected $shouldbe; got $taken"
+            incr failed
+            set shouldbe ""
+        }
+		set shouldbe ""
+	    }
+    }
+    close $fd
+    return $failed
+}
+
 #
 # verify-calls -- check that call return percentages are as expected
 #
@@ -315,6 +349,7 @@ proc run-gcov { args } {
     set gcov_args ""
     set gcov_verify_calls 0
     set gcov_verify_branches 0
+    set gcov_verify_conditions 0
     set gcov_verify_lines 1
     set gcov_verify_intermediate 0
     set gcov_remove_gcda 0
@@ -325,10 +360,13 @@ proc run-gcov { args } {
 	  set gcov_verify_calls 1
 	} elseif { $a == "branches" } {
 	  set gcov_verify_branches 1
+	} elseif { $a == "conditions" } {
+	  set gcov_verify_conditions 1
 	} elseif { $a == "intermediate" } {
 	  set gcov_verify_intermediate 1
 	  set gcov_verify_calls 0
 	  set gcov_verify_branches 0
+	  set gcov_verify_conditions 0
 	  set gcov_verify_lines 0
 	} elseif { $a == "remove-gcda" } {
 	  set gcov_remove_gcda 1
@@ -398,6 +436,11 @@ proc run-gcov { args } {
     } else {
 	set bfailed 0
     }
+    if { $gcov_verify_conditions } {
+	set cdfailed [verify-conditions $testname $testcase $testcase.gcov]
+    } else {
+	set cdfailed 0
+    }
     if { $gcov_verify_calls } {
 	set cfailed [verify-calls $testname $testcase $testcase.gcov]
     } else {
@@ -412,12 +455,12 @@ proc run-gcov { args } {
 
     # Report whether the gcov test passed or failed.  If there were
     # multiple failures then the message is a summary.
-    set tfailed [expr $lfailed + $bfailed + $cfailed + $ifailed]
+    set tfailed [expr $lfailed + $bfailed + $cdfailed + $cfailed + $ifailed]
     if { $xfailed } {
 	setup_xfail "*-*-*"
     }
     if { $tfailed > 0 } {
-	fail "$testname gcov: $lfailed failures in line counts, $bfailed in branch percentages, $cfailed in return percentages, $ifailed in intermediate format"
+	fail "$testname gcov: $lfailed failures in line counts, $bfailed in branch percentages, $cdfailed in condition/decision, $cfailed in return percentages, $ifailed in intermediate format"
 	if { $xfailed } {
 	    clean-gcov $testcase
 	}

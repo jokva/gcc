@@ -1969,6 +1969,10 @@ fprofile-arcs
 Common Report Var(profile_arc_flag)
 Insert arc-based program profiling code.
 
+fprofile-mcdc
+Common Var(profile_mcdc_flag)
+Insert modified condition/decision coverage profiling code.
+
 fprofile-dir=
 Common Joined RejectNegative Var(profile_data_prefix)
 Set the top-level directory for storing the profile data.

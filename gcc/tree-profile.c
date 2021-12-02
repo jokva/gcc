@@ -50,6 +50,9 @@ along with GCC; see the file COPYING3.  If not see
 #include "profile.h"
 #include "tree-cfgcleanup.h"
 #include "params.h"
+#include "cfganal.h"
+#include "cfgloop.h"
+#include <algorithm>
 
 static GTY(()) tree gcov_type_node;
 static GTY(()) tree tree_interval_profiler_fn;
@@ -64,6 +67,775 @@ static GTY(()) tree tree_time_profiler_counter;
 static GTY(()) tree ic_void_ptr_var;
 static GTY(()) tree ic_gcov_type_ptr_var;
 static GTY(()) tree ptr_void;
+
+namespace {
+
+struct mcdc_ctx {
+    /* output arrays */
+    basic_block* blocks;
+    int* sizes;
+
+    /* the size of the blocks buffer */
+    int maxelems;
+
+    /*
+     * number of expressions found; how many counters must be allocated.
+     *
+     * must be smaller than maxelem. Describes the number of blocks+sizes
+     * written.
+     *
+     * Can be replaced by popcount (seen)
+     */
+    int exprs;
+
+    /*
+     * dominating or first-in-expr basic blocks seen; this effectively stops
+     * loop edges from being taken again
+     */
+    auto_sbitmap seen;
+
+    explicit mcdc_ctx (unsigned int size) : maxelems (0), exprs (0), seen (size) {}
+
+    void commit (basic_block top, int nblocks) {
+        blocks   += nblocks;
+        *sizes   += nblocks;
+        maxelems -= nblocks;
+
+        exprs++;
+        sizes++;
+        *sizes = 0;
+
+        bitmap_set_bit (seen, top->index);
+    }
+};
+
+}
+
+static bool
+not_block (const_basic_block bb, const void* post)
+{
+    return ((const_basic_block)post) != bb;
+}
+
+static bool
+not_block_inexpr (const_basic_block bb, const void* post)
+{
+    const const_basic_block* a = (const const_basic_block*)post;
+    return a[0] != bb && dominated_by_p (CDI_POST_DOMINATORS, bb, a[1]);
+
+    return ((const_basic_block)post) != bb;
+}
+
+static int
+index_of (const_basic_block needle, const const_basic_block* blocks, int size)
+{
+    for (int i = 0; i < size; i++) {
+        if (blocks[i] == needle)
+            return i;
+    }
+    return -1;
+}
+
+/*
+ * Find masked conditions
+ */
+static int
+chase_masked_conditions (
+    basic_block block,
+    const basic_block *expr,
+    int nexpr,
+    const unsigned* flag,
+    basic_block *out,
+    int maxsize)
+{
+    edge e;
+    edge_iterator ei;
+    int n = 0;
+    FOR_EACH_EDGE (e, ei, block->preds) {
+        /*
+         * Skip any predecessor not in the expression - there might be such an
+         * edge to the enclosing expression or in the presence of loops, but
+         * masking cannot happen outside the expression itself.
+         *
+         * Expressions should generally be small enough that linear search is
+         * fast, but this could just as well be a bitmap.
+         */
+        if (index_of (e->src, expr, nexpr) == -1)
+            continue;
+
+        if (e->flags & flag[0])
+            out[n++] = e->src;
+    }
+
+    for (int pos = 0; pos < n; pos++)
+    {
+        block = out[pos];
+        FOR_EACH_EDGE (e, ei, block->preds)
+        {
+            /*
+             * Stop on previously-seen node, since all its predecessor have
+             * been added already. Maintaining it as a set also keeps the size
+             * of the output bounded to the size of the expression.
+             */
+            if (index_of (e->src, out, n) != -1)
+                continue;
+
+            if (index_of (e->src, expr, nexpr) == -1)
+                continue;
+
+            if (e->flags & flag[1])
+                out[n++] = e->src;
+
+            if (n == maxsize)
+                return -1;
+        }
+    }
+
+    return n;
+}
+
+/*
+ * Walk the blocks formed by the expression(s) and look for conditions that
+ * would mask other conditions.
+ *
+ * Consider A || B. If B is true then A will does not independently affect the
+ * decision. In a way, this is "reverse" short circuiting, and always work on
+ * the right-hand side of expressions. A || B interpreted as binary decision
+ * diagram becomes:
+ *
+ * A
+ *t|\f
+ * | \
+ * |  B
+ * |t/ \f
+ * |/   \
+ * T     F
+ *
+ * The algorithm looks for "closed paths" like the one between ATB. Masking
+ * right-hand sides happen when a block has a pair of incoming edges of the
+ * same boolean value, and there is an edge connecting the two predecessors
+ * with the *opposite* boolean value. In this particular example:
+ *
+ * A(t) -> T
+ * A(f) -> B
+ * B(t) -> T
+ *
+ * Notice that the masking block is B, and the masked block is A. It gets
+ * slightly more complicated, since masking can affect "outside" its own
+ * subexpression. For example, A || (B && C). If C is false, B is masked.
+ * However, if B && C is true, A gets masked. B && C can be determined from C,
+ * since !B would terminate and not evaluate C, so a true C would mask A.
+ *
+ * A
+ *t|\f
+ * | \
+ * |  \
+ * |   \
+ * |    B
+ * |  t/ \f
+ * |  C   |
+ * |t/ \f |
+ * |/   \ |
+ * T     F
+ *
+ * Notice how BFC forms a "closed path" on a decision false. Previous
+ * subexpressions are masked by walking the tree upwards until:
+ *  + there are no edges with the same truth value
+ *  + it reaches the root
+ * In this particular example, C would mask B (directly), and mask A because
+ * the edge AB is false.
+ */
+
+static void
+mask_dontcare_subexprs (const basic_block* blocks, gcov_type_unsigned* masks, int nblocks)
+{
+
+    memset (masks, 0, sizeof (*masks) * nblocks * 2);
+
+    #define MCDC_MAX_TERMS 64
+    basic_block eblocks[MCDC_MAX_TERMS];
+    for (int i = 0; i < nblocks; i++)
+    {
+        basic_block block = blocks[i];
+
+        if (EDGE_COUNT (block->preds) < 2)
+            continue;
+
+        const unsigned flags[] = {
+            EDGE_TRUE_VALUE,
+            EDGE_FALSE_VALUE,
+            EDGE_TRUE_VALUE,
+        };
+
+        for (int k = 0; k < 2; k++)
+        {
+            int n = chase_masked_conditions
+                (block, blocks, nblocks, flags + k, eblocks, MCDC_MAX_TERMS);
+
+            if (n < 2)
+                continue;
+
+            basic_block highest = eblocks[0];
+            for (int i = 1; i < n; i++)
+                if (eblocks[i]->index > highest->index)
+                    highest = eblocks[i];
+
+            const int idst = index_of (highest, blocks, nblocks);
+            gcc_assert (idst != -1);
+
+            for (int i = 0; i < n; i++) {
+                if (highest == eblocks[i])
+                    continue;
+
+                const int pos = index_of (eblocks[i], blocks, nblocks);
+                masks[2*idst + k] |= gcov_type_unsigned (1) << pos;
+            }
+        }
+    }
+
+    #undef MCDC_MAX_TERMS
+}
+
+static void
+zero_accumulator_on_function_entry (tree accumulator, basic_block block)
+{
+    edge e;
+    edge_iterator ei;
+    tree zero = build_int_cst (gcov_type_node, 0);
+    FOR_EACH_EDGE (e, ei, block->succs) {
+        gsi_insert_on_edge (e, gimple_build_assign (accumulator, zero));
+    }
+}
+
+static int
+intersection(
+    basic_block* left,
+    int nleft,
+    basic_block* right,
+    int nright,
+    basic_block* out)
+{
+    /*
+     * Set intersection for (small) sets of blocks.
+     *
+     * This is a square algorithm, but it is assumed to work on small sets. The
+     * input is the set of blocks between two dominators, which for most
+     * programs should be reasonably small (maybe a dozen or two for bad
+     * cases).
+     *
+     * Note: This must be position preserving with respect to left
+     */
+    int nout = 0;
+    for (int i = 0; i < nleft; ++i) {
+        int k = index_of (left[i], right, nright);
+        if (k >= 0)
+            out[nout++] = left[i];
+    }
+
+    return nout;
+}
+
+static basic_block
+find_last_term (basic_block* blocks, int size)
+{
+    /*
+     * Start from the back because it's *very* likely the last term is at the
+     * back. The last term of the expression is identified by it having a true
+     * & false edge, both pointing *outside* the expression.
+     */
+    for (int i = size - 1; i >= 0; i--) {
+        basic_block b = blocks[i];
+
+        if (EDGE_COUNT (b->succs) != 2)
+            continue;
+
+        basic_block left = EDGE_SUCC (b, 0)->dest;
+        if (index_of (left, blocks, size) != -1)
+            continue;
+
+        basic_block right = EDGE_SUCC (b, 1)->dest;
+        if (index_of (right, blocks, size) != -1)
+            continue;
+
+        return b;
+    }
+
+    return NULL;
+}
+
+static int
+find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block post)
+{
+    gcc_assert (maxsize > 0);
+
+    edge e;
+    edge_iterator ei;
+
+    struct loop* loop = pre->loop_father;
+    int n = 0;
+    out[n++] = pre;
+
+    for (int pos = 0; pos < n; pos++) {
+        basic_block block = out[pos];
+
+        FOR_EACH_EDGE (e, ei, block->succs) {
+            /* Skip loop edges, as they go outside the expression */
+            if (e->dest == loop->header)
+                continue;
+
+            if (e->dest == post)
+                continue;
+
+            if (EDGE_COUNT (e->dest->succs) == 1)
+                continue;
+
+            /* already-seen, don't re-add */
+            if (index_of (e->dest, out, n) != -1)
+                continue;
+
+            out[n++] = e->dest;
+            if (n == maxsize)
+                return n;
+        }
+    }
+
+    return n;
+}
+
+static int
+find_expr_halo (basic_block* blocks, int nblocks)
+{
+    edge e;
+    edge_iterator ei;
+    int n = 0;
+    basic_block* exits = blocks + nblocks;
+    for (int i = 0; i < nblocks; i++) {
+        FOR_EACH_EDGE (e, ei, blocks[i]->succs) {
+            if (index_of (e->dest, blocks, nblocks + n) != -1)
+                continue;
+
+            exits[n++] = e->dest;
+        }
+    }
+
+    return n;
+}
+
+/*
+ * Find and isolate the first expression between two dominators.
+ *
+ * Either block of a conditional could have more decisions and loops, so
+ * isolate the first decision by set-intersecting all paths from the
+ * post-dominator to the entry block.
+ *
+ * The function returns the number of blocks from n that make up the leading
+ * expression in prefix order (i.e. the order expected by the instrumenting
+ * code). When this function returns 0 there are no decisions between pre and
+ * post, and this segment of the CFG can safely be skipped.
+ *
+ * The post nodes can have predecessors that do not belong to this subgraph,
+ * which are skipped. This is expected, for example when there is a conditional
+ * in the else-block of a larger expression:
+ *
+ * if (A) {
+ *    if (B) {}
+ * } else {
+ *    if (C) {} else {}
+ * }
+ *
+ *           A
+ *        t / \ f
+ *         /   \
+ *        B     C
+ *       /\    / \
+ *      /  \  T   F
+ *     T    \  \ /
+ *      \   |   o
+ *       \  |  /
+ *        \ | /
+ *         \|/
+ *          E
+ *
+ * Processing [B, E) which looks like:
+ *
+ *    B
+ *   /|
+ *  / |
+ * T  |
+ *  \ /
+ *   E ----> o // predecessor outside [B, e)
+ */
+
+static int
+find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int maxsize)
+{
+    if (EDGE_COUNT (pre->succs) == 1)
+        return 0;
+
+    struct loop* loop = pre->loop_father;
+    const bool dowhile = !loop_exits_from_bb_p (loop, pre);
+    if (bb_loop_header_p (pre) && !dowhile) {
+        // might be removable with the right pre-check
+        /* if this is a do-while loop, the loop-condition goes to latch */
+        // TODO: loop could have more exits; pick the right one
+        basic_block loopexit = NULL;
+        edge e;
+        edge_iterator ei;
+
+        FOR_EACH_EDGE (e, ei, pre->succs) {
+            if (loop_exits_to_bb_p (loop, e->dest)) {
+                loopexit = e->dest;
+                break;
+            }
+        }
+
+        int n = dfs_enumerate_from
+            (loopexit, 1, not_block, blocks, maxsize, pre);
+
+        FOR_EACH_EDGE (e, ei, pre->preds)
+            if (dominated_by_p (CDI_DOMINATORS, e->src, pre))
+                blocks[n++] = e->src;
+
+        for (int i = 1; i < n; i++) {
+            basic_block b = blocks[i];
+            if (EDGE_COUNT (b->succs) < 2) {
+                blocks[i] = NULL;
+                continue;
+            }
+
+            edge e; edge_iterator ei;
+            FOR_EACH_EDGE (e, ei, b->succs) {
+                if (index_of (e->dest, blocks, n) == -1) {
+                    blocks[i] = NULL;
+                    break;
+                }
+            }
+        }
+
+        /* now remove the post dominator */
+        blocks[0] = pre;
+
+        int k = 1;
+        for (int i = 1; i < n; i++)
+            if (blocks[i])
+                blocks[k++] = blocks[i];
+
+        return k;
+    }
+
+    int nblocks = find_expr_limits (pre, blocks, maxsize, post);
+
+    if (nblocks == 1)
+        return 1;
+
+    /*
+     * TODO: this can *probably* be removed with some better checks later on;
+     * should be decent savings (far fewer DFS and allocs)
+     */
+    edge e;
+    edge_iterator ei;
+
+    FOR_EACH_EDGE (e, ei, post->preds) {
+        basic_block* path = blocks + nblocks;
+
+        if (!dominated_by_p (CDI_DOMINATORS, e->src, pre))
+            continue;
+
+        basic_block doms[] = {
+            pre, post,
+        };
+        int npath = 0;
+
+        if (e->src != pre)
+            npath = dfs_enumerate_from
+            (e->src, 1, not_block_inexpr, path, maxsize - nblocks, doms);
+        path[npath++] = pre;
+
+        basic_block* isect = path + npath;
+        int n = intersection (blocks, nblocks, path, npath, isect);
+        gcc_assert (n <= nblocks);
+        if (n < nblocks)
+        {
+            memcpy (blocks, isect, n * sizeof (*blocks));
+            nblocks = n;
+        }
+    }
+
+    if (nblocks < 2)
+        return nblocks;
+
+    /* record all exit nodes outside of nblocks*/
+    int nexits = find_expr_halo (blocks, nblocks);
+
+    /*
+     * only got 2 exits i.e. the true/false blocks - no need to select from
+     * candidates
+     */
+    if (nexits == 2)
+        return nblocks;
+
+    /* then, dfs + intersect from there */
+    basic_block* exits = blocks + nblocks;
+    for (int i = 0; i < nexits; i++)
+    {
+        FOR_EACH_EDGE (e, ei, exits[i]->preds) {
+            basic_block* path = exits + nexits;
+
+            if (!dominated_by_p (CDI_DOMINATORS, e->src, pre))
+                continue;
+
+            int npath = dfs_enumerate_from
+                (e->src, 1, not_block, path, maxsize - (nblocks + nexits), pre);
+            path[npath++] = pre;
+
+            basic_block* isect = path + npath;
+            int n = intersection (blocks, nblocks, path, npath, isect);
+            gcc_assert (n <= nblocks);
+            if (n < nblocks)
+            {
+                memcpy (blocks, isect, n * sizeof (*blocks));
+                nblocks = n;
+            }
+        }
+    }
+
+    return nblocks;
+}
+
+/*
+ * This is a (slightly) modified version of the algorithm in Whalen, Heimdahl,
+ * De Silva "Efficient Test Coverage Measurement for MC/DC". Their algorithm
+ * work on ASTs, but the instrumentation work on control flow graphs.
+ *
+ * The instrumentation relies heavily on all decision with the same boolean
+ * value have the same *index* in the successor vector. If this is not the
+ * case, some other method must be used to determine which successor correspond
+ * to which boolean value.
+ *
+ * The algorithm does not consider the symbol of a condition, only its
+ * position, which means !A || (!B && A) is considered 3-term conditional.
+ *
+ * The algorithm work recognises three main graph shapes:
+ * * The loop
+ * * Nested expressions
+ * * Conditionals
+ *
+ * For all cases the high-level approach is similar: find the post dominator to
+ * the entry node, and do a depth-first search for the dominator. The entry
+ * and exit might be a subgraph of the function.
+ *
+ * If the dominator is a loop, find all nodes in the expression *before* the
+ * loop entry, which makes up the the loop condition. Then, recursively process
+ * the loop body, before continuing from the dominator.
+ *
+ * Otherwise, isolate the boolean expression by searching from the post
+ * dominator feeding the result into set intersections. The only blocks
+ * remaining are the ones in common in all paths, which are the blocks that
+ * make up the first decision. If there are sub expressions (with decisions)
+ * left, the function is called recursively to sort them out.
+ *
+ * TODO: describe output
+ */
+
+static bool lessindex(basic_block x, basic_block y) {
+    return x->index < y->index;
+}
+
+static void
+find_condition_blocks (basic_block entry, basic_block exit, mcdc_ctx& ctx)
+{
+
+    edge e;
+    edge_iterator ei;
+
+    basic_block pre;
+    basic_block post;
+    for (pre = entry ;; pre = post) {
+        if (pre->index == EXIT_BLOCK)
+            break;
+        if (pre == exit)
+            break;
+        if (bitmap_bit_p (ctx.seen, pre->index))
+            break;
+
+        post = get_immediate_dominator (CDI_POST_DOMINATORS, pre);
+
+        int nblocks = find_first_expr (pre, post, ctx.blocks, ctx.maxelems);
+        if (nblocks == 0)
+            continue;
+
+        const bool is_loop = pre->loop_father->header == pre;
+        basic_block last_term = find_last_term (ctx.blocks, nblocks);
+        if (!last_term) {
+            /*
+             * In some cases, notably single-conditional loops, the whole sub
+             * expression is found with find_first_expr (note: could maybe be
+             * fixed with custom DFS that won't take loop back edges). In those
+             * cases, the pre block *is* the complete conditional.
+             */
+            if (!is_loop) {
+                //printf("last term; not loop\n");
+                /* TODO: diagnostic; give up */
+                continue;
+            }
+            gcc_assert (is_loop);
+            last_term = ctx.blocks[0];
+            nblocks = 1;
+        }
+
+        std::sort(ctx.blocks + 0, ctx.blocks + nblocks, lessindex);
+
+        FOR_EACH_EDGE (e, ei, last_term->succs)
+            ctx.blocks[nblocks++] = e->dest;
+
+        ctx.commit (pre, nblocks);
+        FOR_EACH_EDGE (e, ei, last_term->succs)
+            find_condition_blocks (e->dest, post, ctx);
+    }
+}
+
+int
+find_condition_blocks (
+    basic_block entry,
+    basic_block exit,
+    basic_block *blocks,
+    int *sizes,
+    int maxsize)
+{
+    record_loop_exits ();
+    if (!dom_info_available_p (CDI_POST_DOMINATORS))
+        calculate_dominance_info (CDI_POST_DOMINATORS);
+
+    if (!dom_info_available_p (CDI_DOMINATORS))
+        calculate_dominance_info (CDI_DOMINATORS);
+
+    mcdc_ctx ctx (maxsize);
+    ctx.blocks = blocks;
+    ctx.sizes = sizes + 1;
+    ctx.maxelems = maxsize;
+    sizes[0] = sizes[1] = 0;
+    find_condition_blocks (entry, exit, ctx);
+
+    /* partial sum */
+    for (int i = 0; i < ctx.exprs; ++i)
+        sizes[i + 1] += sizes[i];
+
+    return ctx.exprs;
+}
+
+static void
+emit_bitexpr (edge e, tree lhs, tree op1, tree_code op, tree op2)
+{
+    tree tmp;
+    gassign *read;
+    gassign *bitw;
+    gassign *write;
+    /*
+     * insert lhs = op1 <bit-op> op2, e.g. lhs = op1 | op2
+     */
+    tmp   = make_temp_ssa_name  (gcov_type_node, NULL, "__mcdc_tmp");
+    read  = gimple_build_assign (tmp, op1);
+    tmp   = make_temp_ssa_name  (gcov_type_node, NULL, "__mcdc_tmp");
+    bitw  = gimple_build_assign (tmp, op, gimple_assign_lhs (read), op2);
+    write = gimple_build_assign (lhs, gimple_assign_lhs (bitw));
+
+    gsi_insert_on_edge (e, read);
+    gsi_insert_on_edge (e, bitw);
+    gsi_insert_on_edge (e, write);
+}
+
+int instrument_decision (basic_block *blocks, int nblocks, int idx_decision)
+{
+    gcc_assert (nblocks > 2);
+
+    tree accu[2] = {
+        build_decl (
+            UNKNOWN_LOCATION,
+            VAR_DECL,
+            get_identifier("__gcov_mcdc_accu_true"),
+            gcov_type_node
+        ),
+        build_decl (
+            UNKNOWN_LOCATION,
+            VAR_DECL,
+            get_identifier("__gcov_mcdc_accu_false"),
+            gcov_type_node
+        ),
+    };
+    zero_accumulator_on_function_entry
+        (accu[0], ENTRY_BLOCK_PTR_FOR_FN (cfun));
+    zero_accumulator_on_function_entry
+        (accu[1], ENTRY_BLOCK_PTR_FOR_FN (cfun));
+
+    gcov_type_unsigned  masks_static[64];
+    gcov_type_unsigned *masks_dynamic = NULL;
+    gcov_type_unsigned *masks;
+    gcc_assert (sizeof (*masks) == sizeof (uint64_t));
+    if ((size_t)nblocks * 2 < sizeof (masks_static) / sizeof (masks_static[0]))
+      {
+        masks = masks_static;
+      }
+    else
+      {
+        masks_dynamic = XNEWVEC (gcov_type_unsigned, nblocks * 2);
+        masks = masks_dynamic;
+      }
+
+    mask_dontcare_subexprs (blocks, masks, nblocks);
+    int condition = 0;
+
+    /* TODO: -2 because of true/false exit blocks */
+    for (int iblock = 0; iblock < nblocks - 2; iblock++)
+    {
+        basic_block block = blocks[iblock];
+
+        if (EDGE_COUNT (block->succs) < 2)
+            continue;
+
+        for (int k = 0; k < 2; k++)
+        {
+            edge e = EDGE_I (block->succs, k);
+            const int t = !!!(e->flags & EDGE_TRUE_VALUE);
+
+            /* accu[k] |= condition[i] */
+            tree rhs = build_int_cst (gcov_type_node, 1ULL << condition);
+            emit_bitexpr (e, accu[t], accu[t], BIT_IOR_EXPR, rhs);
+
+            if (masks[2*condition + t] == 0)
+                continue;
+
+            /* accu[k] &= ~mask[k] */
+            gcov_type_unsigned mask = masks[2*condition + t];
+            for (int j = 0; j < 2; j++) {
+                rhs = build_int_cst (gcov_type_node, ~mask);
+                emit_bitexpr (e, accu[j], accu[j], BIT_AND_EXPR, rhs);
+            }
+        }
+
+        condition++;
+    }
+
+    edge e;
+    edge_iterator ei;
+    basic_block exit = EXIT_BLOCK_PTR_FOR_FN (cfun);
+    FOR_EACH_EDGE (e, ei, exit->preds)
+    {
+        /* independent[k] |= accu[k] */
+        for (int k = 0; k < 2; k++) {
+            tree ref = tree_coverage_counter_ref (GCOV_COUNTER_MCDC, 2*idx_decision + k);
+
+            tree tmp = make_temp_ssa_name (gcov_type_node, NULL, "__mcdc_tmp");
+            gassign *read = gimple_build_assign (tmp, ref);
+            gsi_insert_on_edge (e, read);
+
+            tree rop = gimple_assign_lhs (read);
+            emit_bitexpr (e, unshare_expr (ref), accu[k], BIT_IOR_EXPR, rop);
+        }
+    }
+
+    free (masks_dynamic);
+    return condition;
+}
 
 /* Do initialization work for the edge profiler.  */
 
