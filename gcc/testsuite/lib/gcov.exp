@@ -174,33 +174,56 @@ proc verify-branches { testname testcase file } {
 
 proc verify-conditions { testname testcase file } {
     set failed 0
-    set shouldbe ""
+    set shouldt ""
+    set shouldf ""
     set fd [open $file r]
     set n 0
-    while { [gets $fd line] >= 0 } {
-	regexp "^\[^:\]+: *(\[0-9\]+):" "$line" all n
-	if [regexp "condition" $line] {
-	    verbose "Processing condition/decision line $n: $line" 3
-	    if [regexp "conditions\\((\[0-9 \]+/\[0-9 \]+)\\)" "$line" all new_shouldbe] {
-		# All percentages in the current list should have been seen.
-		if {[llength $shouldbe] != 0} {
-		    fail "$testname line $n: expected condition ratios not found: $shouldbe"
-		    incr failed
-		    set shouldbe ""
-		}
-		set shouldbe $new_shouldbe
-		}
-	    } elseif [regexp "MCDC: \\((\[0-9\]+/\[0-9\]+)\\)" "$line" \
-			all taken] {
-		# If this percentage is one to check for then remove it
-		# from the list.  It's normal to ignore some reports.
-        if {$taken != $shouldbe} {
-            fail "$testname line $n: expected $shouldbe; got $taken"
-            incr failed
-            set shouldbe ""
+    while {[gets $fd line] >= 0} {
+        regexp "^\[^:\]+: *(\[0-9\]+):" "$line" all n
+        set ok 1
+        # TODO should fail on unexpected condition$
+
+        if [regexp "conditions\.true\\((\[0-9 \]+)" "$line" all new] {
+            if {[llength $shouldt] != 0} {
+                fail "$testname line $n: expected condition.true not found: $shouldt"
+                set ok 0
+            }
+            set shouldt $new
+        } 
+        if [regexp "conditions\.false\\((\[0-9 \]+)" "$line" all new] {
+            if {[llength $shouldf] != 0} {
+                fail "$testname line $n: expected condition.false not found: $shouldf"
+                set ok 0
+            }
+            set shouldf $new
         }
-		set shouldbe ""
-	    }
+        
+        if [regexp "condition +(\[0-9\]+) true not covered" "$line" all cond] {
+            set i [lsearch $shouldt $cond]
+            if {$i != -1} {
+                set shouldt [lreplace $shouldt $i $i]
+            }
+        } elseif [regexp "condition +(\[0-9\]+) false not covered" "$line" all cond] {
+            set i [lsearch $shouldf $cond]
+            if {$i != -1} {
+                set shouldf [lreplace $shouldf $i $i]
+            }
+        } elseif [regexp "conditions\\(end\\)" "$line"] {
+            if {[llength $shouldt] != 0} {
+                fail "$testname line $n: missing failures for true: $shouldt"
+                set ok 0
+            }
+            if {[llength $shouldf] != 0} {
+                fail "$testname line $n: missing failure for false: $shouldf"
+                set ok 0
+            }
+            set shouldt ""
+            set shouldf ""
+        }
+
+        if {$ok != 1} {
+            incr failed
+        }
     }
     close $fd
     return $failed

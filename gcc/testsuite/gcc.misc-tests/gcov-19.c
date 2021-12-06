@@ -7,7 +7,8 @@ int x = 0;
 /* || works */
 void mcdc001a (int a, int b)
 {
-    if (a || b) /* conditions(1/4) */
+    if (a || b) /* conditions.true(0) conditions.false(0 1) */
+                /* conditions(end) */
       x = 1;
     else
       x = 2;
@@ -15,7 +16,8 @@ void mcdc001a (int a, int b)
 
 void mcdc001b (int a, int b)
 {
-    if (a || b) /* conditions(3/4) */
+    if (a || b) /* conditions.true(0) conditions.false() */
+                /* conditions(end) */
       x = 1;
     else
       x = 2;
@@ -23,7 +25,8 @@ void mcdc001b (int a, int b)
 
 void mcdc001c (int a, int b)
 {
-    if (a || b) /* conditions(4/4) */
+    if (a || b) /* conditions.true() conditions.false() */
+                /* conditions(end) */
       x = 1;
     else
       x = 2;
@@ -32,7 +35,8 @@ void mcdc001c (int a, int b)
 /* && works */
 void mcdc002a (int a, int b)
 {
-    if (a && b) /* conditions(1/4) */
+    if (a && b) /* conditions.true(0 1) conditions.false(0) */
+                /* conditions(end) */
       x = 1;
     else
       x = 2;
@@ -40,7 +44,8 @@ void mcdc002a (int a, int b)
 
 void mcdc002b (int a, int b)
 {
-    if (a && b) /* conditions(3/4) */
+    if (a && b) /* conditions.true() conditions.false(0) */
+                /* conditions(end) */
       x = 1;
     else
       x = 2;
@@ -48,7 +53,8 @@ void mcdc002b (int a, int b)
 
 void mcdc002c (int a, int b)
 {
-    if (a && b) /* conditions(4/4) */
+    if (a && b) /* conditions.true() conditions.false() */
+                /* conditions(end) */
       x = 1;
     else
       x = 2;
@@ -57,7 +63,8 @@ void mcdc002c (int a, int b)
 /* negation works */
 void mcdc003a (int a, int b)
 {
-    if (a || b) /* conditions(3/4) */
+    if (!a || !b) /* conditions.true() conditions.false(0 1) */
+                  /* conditions(end) */
       x = 1;
     else
       x = 2;
@@ -66,7 +73,8 @@ void mcdc003a (int a, int b)
 /* single conditionals with and without else */
 void mcdc004a (int a)
 {
-    if (a) /* conditions(1/2) */
+    if (a) /* conditions.true(0) conditions.false() */
+           /* conditions(end) */
       x = 1;
     else
       x = 2;
@@ -74,7 +82,8 @@ void mcdc004a (int a)
 
 void mcdc004b (int a)
 {
-    if (a) /* conditions(2/2) */
+    if (a) /* conditions.true() conditions.false() */
+           /* conditions(end) */
       x = 1;
     else
       x = 2;
@@ -82,14 +91,16 @@ void mcdc004b (int a)
 
 void mcdc004c (int a)
 {
-    if (a) /* conditions(1/2) */
+    if (a) /* conditions.true() conditions.false(0) */
+           /* conditions(end) */
       x = 1;
 }
 
 /* mixing && and || works */
 void mcdc005a (int a, int b, int c)
 {
-    if ((a && b) || c) /* conditions(1/6) */
+    if ((a && b) || c) /* conditions.true(0 1) conditions.false(0 1 2) */
+                       /* conditions(end) */
       x = 1;
     else
       x = 2;
@@ -97,7 +108,8 @@ void mcdc005a (int a, int b, int c)
 
 void mcdc005b (int a, int b, int c, int d)
 {
-    if ((a && (b || c)) && d) /* conditions(4/8) */
+    if ((a && (b || c)) && d) /* conditions.true(1 2 3) conditions.false(0) */
+                              /* conditions(end) */
       x = 1;
     else
       x = 2;
@@ -106,16 +118,19 @@ void mcdc005b (int a, int b, int c, int d)
 /* nested conditionals */
 void mcdc006a (int a, int b, int c, int d, int e)
 {
-    if (a) /* conditions(2/2) */
+    if (a) /* conditions.true() conditions.false() */
+           /* conditions(end) */
       {
-        if (b && c) /* conditions(3/4) */
+        if (b && c) /* conditions.true() conditions.false(1) */
+                    /* conditions(end) */
           x = 1;
         else
           x = 2;
       }
     else
       {
-        if (c || d) /* conditions(2/4) */
+        if (c || d) /* conditions.true(0 1) conditions.false() */
+                    /* conditions(end) */
           x = 3;
         else
           x = 4;
@@ -125,16 +140,20 @@ void mcdc006a (int a, int b, int c, int d, int e)
 /* else/if */
 void mcdc007a (int a, int b, int c, int d)
 {
-    if (a) /* conditions(2/2) */
+    if (a) /* conditions.true() conditions.false() */
+           /* conditions(end) */
       {
-      if (b) /* conditions(1/2) */
+      if (b) /* conditions.true(0) conditions.false() */
+             /* conditions(end) */
         x = 1;
       else
         x = 2;
       }
-    else if (c) /* conditions(2/2) */
+    else if (c) /* conditions.true() conditions.false() */
+                /* conditions(end) */
       {
-        if (d) /* conditions(1/2) */
+        if (d) /* conditions.true(0) conditions.false() */
+               /* conditions(end) */
           x = 3;
       }
 }
@@ -142,42 +161,49 @@ void mcdc007a (int a, int b, int c, int d)
 /* while loop */
 void mcdc008a (int a)
 {
-    while (a < 10) /* conditions(2/2) */
+    while (a < 10) /* conditions.true() conditions.false() */
+                   /* conditions(end) */
         x = a++;
 }
 
 void mcdc008b (int a)
 {
-    while (a > 10) /* conditions(1/2) */
+    while (a > 10) /* conditions.true(0) conditions.false() */
+                   /* conditions(end) */
         x = a--;
 }
 
 void mcdc008c (int a)
 {
     // should work, even with no body
-    while (a) /* conditions(2/2) */
+    while (a) /* conditions.true() conditions.false() */
+              /* conditions(end) */
         break;
 }
 
 void mcdc008d (int a, int b, int c, int d)
 {
     /* multi-term loop conditional */
-    while ((a && (b || c)) && d) /* conditions(8/8) */
+    while ((a && (b || c)) && d) /* conditions.true() conditions.false() */
+                                 /* conditions(end) */
         a = b = c = d = 0;
 }
 
 void mcdc009a (int a, int b)
 {
-    while (a > 0 && b > 0) /* conditions(3/4) */
+    while (a > 0 && b > 0) /* conditions.true() conditions.false(1) */
+                           /* conditions(end) */
         x = a--;
 }
 
 /* for loop */
 void mcdc010a(int a, int b)
 {
-    for (int i = 0; i < b; i++) /* conditions(2/2) */
+    for (int i = 0; i < b; i++) /* conditions.true() conditions.false() */
+                                /* conditions(end) */
       {
-        if (a < b) /* conditions(2/2) */
+        if (a < b) /* conditions.true() conditions.false() */
+                   /* conditions(end) */
             x = 1;
         else
             x = a += 2;
@@ -191,7 +217,8 @@ void mcdc010b (int a)
 {
     for (;;)
     {
-        if (always(a)) /* conditions(1/2) */
+        if (always(a)) /* conditions.true() conditions.false(0) */
+                       /* conditions(end) */
         {
             x = a;
             break;
@@ -203,17 +230,20 @@ void mcdc010b (int a)
 /* conditionals without control flow constructs work */
 void mcdc011a (int a, int b, int c)
 {
-    x = (a && b) || c; /* conditions(5/6) */
+    x = (a && b) || c; /* conditions.true() conditions.false(1) */
+                       /* conditions(end) */
 }
 
 /* sequential expressions are handled independently */
 void mcdc012a (int a, int b, int c) {
-    if (a || b) /* conditions(3/4) */
+    if (a || b) /* conditions.true(0) conditions.false() */
+                /* conditions(end) */
       x = 1;
     else
       x = 2;
 
-    if (c) /* conditions(2/2) */
+    if (c) /* conditions.true() conditions.false() */
+           /* conditions(end) */
       x = 1;
 }
 
@@ -227,9 +257,10 @@ void mcdc013a (int a, int /* b */, int c)
      * Specification: (a && b) || c
      *
      * But the expression was implemented wrong. This has branch coverage, but
-     * not MC/DC
+     * 1not MC/DC
      */
-    if ((a && !c) || c) /* conditions(5/6) */
+    if ((a && !c) || c) /* conditions.true() conditions.false(1) */
+                        /* conditions(end) */
         x = 1;
     else
         x = 2;
@@ -238,7 +269,8 @@ void mcdc013a (int a, int /* b */, int c)
 void mcdc014a ()
 {
     int conds[64] = { 0 };
-    x = conds[ 0] /* conditions(64/128) */
+
+    x = conds[ 0]
      || conds[ 1]
      || conds[ 2]
      || conds[ 3]
@@ -301,25 +333,29 @@ void mcdc014a ()
      || conds[60]
      || conds[61]
      || conds[62]
-     || conds[63]
-     ;
+     || conds[63]  /* conditions.true(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63) */
+     ;             /* conditions(end) */
 }
 
 /* early returns */
 void mcdc015a (int a, int b)
 {
-    if (a) /* conditions(2/2) */
+    if (a) /* conditions.true() conditions.false() */
+           /* conditions(end) */
         return;
 
-    if (b) /* conditions(1/2) */
+    if (b) /* conditions.true(0) conditions.false() */
+           /* conditions(end) */
         x = 1;
 }
 
 void mcdc015b (int a, int b)
 {
-    for (int i = 5; i > a; i--) /* conditions(2/2) */
+    for (int i = 5; i > a; i--) /* conditions.true() conditions.false() */
+                                /* conditions(end) */
     {
-        if (i == b) /* conditions(2/2) */
+        if (i == b) /* conditions.true() conditions.false() */
+                    /* conditions(end) */
             return;
         x = i;
     }
@@ -327,9 +363,11 @@ void mcdc015b (int a, int b)
 
 void mcdc015c (int a, int b)
 {
-    for (int i = 5; i > a; i--) /* conditions(2/2) */
+    for (int i = 5; i > a; i--) /* conditions.true() conditions.false() */
+                                /* conditions(end) */
     {
-        if (i == b) /* conditions(2/2) */
+        if (i == b) /* conditions.true() conditions.false() */
+                    /* conditions(end) */
         {
             x = 0;
             return;
@@ -348,42 +386,53 @@ void mcdc015c (int a, int b)
 /* check nested loops */
 void mcdc016a (int a, int b)
 {
-    for (int i = 0; i < a; i++) /* conditions(2/2) */
-        for (int k = 0; k < b; k++) /* conditions(2/2) */
+    for (int i = 0; i < a; i++) /* conditions.true() conditions.false() */
+                                /* conditions(end) */
+        for (int k = 0; k < b; k++) /* conditions.true() conditions.false() */
+                                    /* conditions(end) */
             x = i + k;
 }
 
 void mcdc016b (int a, int b)
 {
-    for (int i = 0; i < a; i++) /* conditions(2/2) */
+    for (int i = 0; i < a; i++) /* conditions.true() conditions.false() */
+                                /* conditions(end) */
     {
-        if (a > 5) /* conditions(2/2) */
+        if (a > 5) /* conditions.true() conditions.false() */
+                   /* conditions(end) */
             break;
 
-        for (int k = 0; k < b; k++) /* conditions(2/2) */
+        for (int k = 0; k < b; k++) /* conditions.true() conditions.false() */
+                                    /* conditions(end) */
             x = i + k;
     }
 }
 
 void mcdc016c (int a, int b)
 {
-    for (int i = 0; i < a; i++) /* conditions(2/2) */
+    for (int i = 0; i < a; i++) /* conditions.true() conditions.false() */
+                                /* conditions(end) */
     {
-        if (a > 5) /* conditions(1/2) */
+        if (a > 5) /* conditions.true(0) conditions.false() */
+                   /* conditions(end) */
             return;
 
-        for (int k = 0; k < b; k++) /* conditions(2/2) */
+        for (int k = 0; k < b; k++) /* conditions.true() conditions.false() */
+                                    /* conditions(end) */
             x = i + k;
     }
 }
 
 void mcdc016d (int a, int b)
 {
-    for (int i = 0; i < a; i++) /* conditions(2/2) */
+    for (int i = 0; i < a; i++) /* conditions.true() conditions.false() */
+                                /* conditions(end) */
     {
-        for (int k = 0; k < 5; k++) /* conditions(2/2) */
+        for (int k = 0; k < 5; k++) /* conditions.true() conditions.false() */
+                                    /* conditions(end) */
         {
-            if (b > 5) /* conditions(1/2) */
+            if (b > 5) /* conditions.true(0) conditions.false() */
+                       /* conditions(end) */
                 return;
             x = i + k;
         }
@@ -396,7 +445,8 @@ void mcdc017a (int a)
 {
     do {
         a--;
-    } while (a > 0); /* conditions(2/2) */
+    } while (a > 0); /* conditions.true() conditions.false() */
+                     /* conditions(end) */
 }
 
 void noop () {}
@@ -411,10 +461,12 @@ void mcdc017b (int a, int b)
          */
         noop ();
         a--;
-        if (b) /* conditions(2/2) */
+        if (b) /* conditions.true() conditions.false() */
+               /* conditions(end) */
             break;
 
-    } while (a > 0); /* conditions(2/2) */
+    } while (a > 0); /* conditions.true() conditions.false() */
+                     /* conditions(end) */
 }
 
 void mcdc017c (int a, int b)
@@ -423,15 +475,19 @@ void mcdc017c (int a, int b)
     int right = 0;
     int n = a + b;
     do {
-        if (a) /* conditions(1/2) */
+        if (a) /* conditions.true() conditions.false(0) */
+               /* conditions(end) */
         {
-            left = a > left ? b : left; /* conditions(2/2) */
+            left = a > left ? b : left; /* conditions.true() conditions.false() */
+                                        /* conditions(end) */
         }
-        if (b) /* conditions(1/2) */
+        if (b) /* conditions.true() conditions.false(0) */
         {
-            right = b > right ? a : right; /* conditions(2/2) */
+            right = b > right ? a : right; /* conditions.true() conditions.false() */
+                                           /* conditions(end) */
         }
-    } while (n-- > 0); /* conditions(2/2) */
+    } while (n-- > 0); /* conditions.true() conditions.false() */
+                       /* conditions(end) */
 }
 
 int id  (int x) { return  x; }
@@ -445,41 +501,50 @@ int mcdc018a (int a, int b, int c, int d, int e, int f, int g, int len)
     do
     {
         n = -1;
-        if (n > len) /* conditions(2/2) */
+        if (n > len) /* conditions.true() conditions.false() */
+                     /* conditions(end) */
             n = len;
 
-        if (b) /* conditions(2/2) */
+        if (b) /* conditions.true() conditions.false() */
+               /* conditions(end) */
         {
-            if (b < 5) /* conditions(2/2) */
+            if (b < 5) /* conditions.true() conditions.false() */
+                       /* conditions(end) */
                 x = 1;
             noop();
         }
-        else if (c && d) /* conditions(3/4) */
+        else if (c && d) /* conditions.true() conditions.false(1) */
+                         /* conditions(end) */
         {
             x = 2;
             break;
         }
-        else if (e || f) /* conditions(2/4) */
+        else if (e || f) /* conditions.true() conditions.false(0 1) */
+                         /* conditions(end) */
         {
-            if (id(g)) /* conditions(2/2) */
+            if (id(g)) /* conditions.true() conditions.false() */
+                       /* conditions(end) */
                 return 0;
             continue;
         }
-    } while (a-- > 0); /* conditions(2/2) */
+    } while (a-- > 0); /* conditions.true() conditions.false() */
+                       /* conditions(end) */
 
     return 1;
 }
 
 void mcdc018b (int a, int b, int c) {
     int n;
-    while (a) /* conditions(2/2) */
+    while (a) /* conditions.true() conditions.false() */
+              /* conditions(end) */
     {
         /*
          * else block does not make a difference for the problem, but ensures
          * loop termination
          */
-        if (b) /* conditions(2/2) */
-            n = c ? 0 : 0; // doesn't show up in CFG yet
+        if (b) /* conditions.true() conditions.false() */
+               /* conditions(end) */
+            n = c ? 0 : 0; // does not show up in CFG (embedded in the block)
         else
             n = 0;
         a = n;
@@ -488,27 +553,6 @@ void mcdc018b (int a, int b, int c) {
 
 
 /* test with functions as conditionals */
-
-/* independent conditions (masking) */
-void mcdc019a (int a, int b)
-{
-    x = a || b; /* conditions(1/4) */
-}
-
-void mcdc019b (int a, int b)
-{
-    x = a || b; /* conditions(2/4) */
-}
-
-void mcdc019c (int a, int b)
-{
-    x = a || b; /* conditions(1/4) */
-}
-
-void mcdc019d (int a, int b)
-{
-    x = a || b; /* conditions(4/4) */
-}
 
 int main ()
 {
@@ -628,16 +672,6 @@ int main ()
 
   mcdc018b (1, 0, 0);
   mcdc018b (1, 1, 0);
-
-  mcdc019a (0, 1);
-
-  mcdc019b (0, 0);
-
-  mcdc019c (1, 1);
-
-  mcdc019d (0, 0);
-  mcdc019d (0, 1);
-  mcdc019d (1, 0);
 }
 
 /* { dg-final { run-gcov conditions { --conditions gcov-19.c } } } */
