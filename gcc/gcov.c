@@ -698,7 +698,7 @@ static const char *format_gcov (gcov_type, gcov_type, int);
 static void accumulate_line_counts (source_info *);
 static void output_gcov_file (const char *, source_info *);
 static int output_branch_count (FILE *, int, const arc_info *);
-static void output_mcdc_count (FILE *, const block_info *);
+static void output_conditions (FILE *, const block_info *);
 static void output_lines (FILE *, const source_info *);
 static string make_gcov_file_name (const char *, const char *);
 static char *mangle_name (const char *);
@@ -2957,25 +2957,26 @@ accumulate_line_counts (source_info *src)
 }
 
 static void
-output_mcdc_count (FILE *gcov_file, const block_info *binfo)
+output_conditions (FILE *gcov_file, const block_info *binfo)
 {
     const condition_info& info = binfo->conditions;
-    if (info.n_terms <= 0)
+    if (info.n_terms == 0)
         return;
 
-    int expected = 2 * info.n_terms;
-    int got = info.popcount ();
+    const int expected = 2 * info.n_terms;
+    const int got = info.popcount ();
 
-    if (expected == got) {
-        fnotice (gcov_file, "all conditions covered (%d/%d)\n", got, expected);
-    } else {
-        for (unsigned i = 0; i < info.n_terms; i++) {
-            gcov_type_unsigned index = 1 << i;
-            if (!(index & info.truev))
-              fnotice (gcov_file, "condition %2u true not covered\n", i);
-            if (!(index & info.falsev))
-                fnotice (gcov_file, "condition %2u false not covered\n", i);
-        }
+    fnotice (gcov_file, "conditions covered %d/%d\n", got, expected);
+    if (expected == got)
+        return;
+
+    for (unsigned i = 0; i < info.n_terms; i++) {
+        gcov_type_unsigned index = 1;
+        index <<= i;
+        if (!(index & info.truev))
+            fnotice (gcov_file, "condition %2u not covered (true)\n", i);
+        if (!(index & info.falsev))
+            fnotice (gcov_file, "condition %2u not covered (false)\n", i);
     }
 }
 
@@ -3190,9 +3191,8 @@ output_line_details (FILE *f, const line_info *line, unsigned line_num)
 	    for (arc = (*it)->succ; arc; arc = arc->succ_next)
 	      jx += output_branch_count (f, jx, arc);
 
-      // TODO: extend to print bit-vector
       if (flag_conditions)
-        output_mcdc_count (f, *it);
+        output_conditions (f, *it);
 	}
     }
   else
@@ -3211,7 +3211,7 @@ output_line_details (FILE *f, const line_info *line, unsigned line_num)
          {
            for (vector<block_info *>::const_iterator it = line->blocks.begin ();
 	            it != line->blocks.end (); it++)
-              output_mcdc_count (f, *it);
+              output_conditions (f, *it);
           }
     }
 }
