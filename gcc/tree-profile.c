@@ -114,6 +114,8 @@ struct mcdc_ctx {
 
 }
 
+#define CONDITIONS_MAX_TERMS 64
+
 void print(const basic_block* blocks, int size, const char* s = "") {
     return;
     printf("%s [ ", s);
@@ -280,8 +282,7 @@ mask_dontcare_subexprs (const basic_block* blocks, gcov_type_unsigned* masks, in
 
     memset (masks, 0, sizeof (*masks) * nblocks * 2);
 
-    #define MCDC_MAX_TERMS 64
-    basic_block eblocks[MCDC_MAX_TERMS];
+    basic_block eblocks[CONDITIONS_MAX_TERMS];
     for (int i = 0; i < nblocks; i++)
     {
         basic_block block = blocks[i];
@@ -298,7 +299,7 @@ mask_dontcare_subexprs (const basic_block* blocks, gcov_type_unsigned* masks, in
         for (int k = 0; k < 2; k++)
         {
             int n = chase_masked_conditions
-                (block, blocks, nblocks, flags + k, eblocks, MCDC_MAX_TERMS);
+                (block, blocks, nblocks, flags + k, eblocks, CONDITIONS_MAX_TERMS);
 
             if (n < 2)
                 continue;
@@ -320,8 +321,6 @@ mask_dontcare_subexprs (const basic_block* blocks, gcov_type_unsigned* masks, in
             }
         }
     }
-
-    #undef MCDC_MAX_TERMS
 }
 
 static void
@@ -664,9 +663,17 @@ find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
         // TODO: document
         std::sort(ctx.blocks, ctx.blocks + nblocks, index_lt);
         basic_block last = ctx.blocks[nblocks - 1];
+
         FOR_EACH_EDGE (e, ei, last->succs)
             ctx.blocks[nblocks++] = e->dest;
-        ctx.commit (pre, nblocks);
+
+
+        if (nblocks <= CONDITIONS_MAX_TERMS) {
+            ctx.commit (pre, nblocks);
+        } else {
+            location_t loc = gimple_location (gsi_stmt (gsi_last_bb (pre)));
+            warning_at (loc, 0, "Too many conditions (found %d); giving up coverage", nblocks);
+        }
 
         FOR_EACH_EDGE (e, ei, last->succs)
             find_conditions_between (ctx, e->dest, post);
@@ -815,6 +822,8 @@ int instrument_decision (basic_block *blocks, int nblocks, int idx_decision)
     free (masks_dynamic);
     return condition;
 }
+
+#undef CONDITIONS_MAX_TERMS
 
 /* Do initialization work for the edge profiler.  */
 

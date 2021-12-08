@@ -269,72 +269,21 @@ void mcdc013a (int a, int /* b */, int c)
 void mcdc014a ()
 {
     int conds[64] = { 0 };
-
-    x = conds[ 0]
-     || conds[ 1]
-     || conds[ 2]
-     || conds[ 3]
-     || conds[ 4]
-     || conds[ 5]
-     || conds[ 6]
-     || conds[ 7]
-     || conds[ 8]
-     || conds[ 9]
-     || conds[10]
-     || conds[11]
-     || conds[12]
-     || conds[13]
-     || conds[14]
-     || conds[15]
-     || conds[16]
-     || conds[17]
-     || conds[18]
-     || conds[19]
-     || conds[20]
-     || conds[21]
-     || conds[22]
-     || conds[23]
-     || conds[24]
-     || conds[25]
-     || conds[26]
-     || conds[27]
-     || conds[28]
-     || conds[29]
-     || conds[30]
-     || conds[31]
-     || conds[32]
-     || conds[33]
-     || conds[34]
-     || conds[35]
-     || conds[36]
-     || conds[37]
-     || conds[38]
-     || conds[39]
-     || conds[40]
-     || conds[41]
-     || conds[42]
-     || conds[43]
-     || conds[44]
-     || conds[45]
-     || conds[46]
-     || conds[47]
-     || conds[48]
-     || conds[49]
-     || conds[50]
-     || conds[51]
-     || conds[52]
-     || conds[53]
-     || conds[54]
-     || conds[55]
-     || conds[56]
-     || conds[57]
-     || conds[58]
-     || conds[59]
-     || conds[60]
-     || conds[61]
-     || conds[62]
-     || conds[63]  /* conditions(64/128) true(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63) */
-     ;             /* conditions(end) */
+    /* conditions(64/128) true(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63) */
+    x = conds[ 0] || conds[ 1] || conds[ 2] || conds[ 3] || conds[ 4] ||
+        conds[ 5] || conds[ 6] || conds[ 7] || conds[ 8] || conds[ 9] ||
+        conds[10] || conds[11] || conds[12] || conds[13] || conds[14] ||
+        conds[15] || conds[16] || conds[17] || conds[18] || conds[19] ||
+        conds[20] || conds[21] || conds[22] || conds[23] || conds[24] ||
+        conds[25] || conds[26] || conds[27] || conds[28] || conds[29] ||
+        conds[30] || conds[31] || conds[32] || conds[33] || conds[34] ||
+        conds[35] || conds[36] || conds[37] || conds[38] || conds[39] ||
+        conds[40] || conds[41] || conds[42] || conds[43] || conds[44] ||
+        conds[45] || conds[46] || conds[47] || conds[48] || conds[49] ||
+        conds[50] || conds[51] || conds[52] || conds[53] || conds[54] ||
+        conds[55] || conds[56] || conds[57] || conds[58] || conds[59] ||
+        conds[60] || conds[61] || conds[62] || conds[63]
+     ;  /* conditions(end) */
 }
 
 /* early returns */
@@ -526,6 +475,25 @@ void mcdc018b (int a, int b, int c) {
             n = 0;
         a = n;
     }
+}
+
+/* too many conditions, so coverage gives up */
+void mcdc019a () {
+    int conds[65] = { 0 };
+    x = conds[ 0] || conds[ 1] || conds[ 2] || conds[ 3] || conds[ 4] ||
+        conds[ 5] || conds[ 6] || conds[ 7] || conds[ 8] || conds[ 9] ||
+        conds[10] || conds[11] || conds[12] || conds[13] || conds[14] ||
+        conds[15] || conds[16] || conds[17] || conds[18] || conds[19] ||
+        conds[20] || conds[21] || conds[22] || conds[23] || conds[24] ||
+        conds[25] || conds[26] || conds[27] || conds[28] || conds[29] ||
+        conds[30] || conds[31] || conds[32] || conds[33] || conds[34] ||
+        conds[35] || conds[36] || conds[37] || conds[38] || conds[39] ||
+        conds[40] || conds[41] || conds[42] || conds[43] || conds[44] ||
+        conds[45] || conds[46] || conds[47] || conds[48] || conds[49] ||
+        conds[50] || conds[51] || conds[52] || conds[53] || conds[54] ||
+        conds[55] || conds[56] || conds[57] || conds[58] || conds[59] ||
+        conds[60] || conds[61] || conds[62] || conds[63] || conds[64]
+    ;
 }
 
 
