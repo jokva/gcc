@@ -97,7 +97,10 @@ struct mcdc_ctx {
      */
     auto_sbitmap seen;
 
-    explicit mcdc_ctx (unsigned size) : maxelems (0), exprs (0), seen (size) {}
+    explicit mcdc_ctx (unsigned size) : maxelems (0), exprs (0), seen (size)
+    {
+        bitmap_clear (seen);
+    }
 
     void commit (basic_block top, int nblocks) {
         blocks   += nblocks;
@@ -358,6 +361,10 @@ find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block po
             if (dest == post)
                 continue;
 
+            /* don't consider exceptions and abnormal exits */
+            if (!(e->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE)))
+                continue;
+
             if (single_succ_p (dest))
                 continue;
 
@@ -487,10 +494,28 @@ dfsup1 (sbitmap reachable, basic_block pre, basic_block post, basic_block* stack
     }
 }
 
+static bool
+is_conditional_p (const basic_block b)
+{
+    if (single_succ_p (b))
+        return false;
+
+    edge e;
+    edge_iterator ei;
+    bool t = false;
+    bool f = false;
+    FOR_EACH_EDGE (e, ei, b->succs)
+    {
+        t = t | (e->flags & EDGE_TRUE_VALUE);
+        f = f | (e->flags & EDGE_FALSE_VALUE);
+    }
+    return t && f;
+}
+
 static int
 find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int maxsize)
 {
-    if (single_succ_p (pre))
+    if (!is_conditional_p (pre))
         return 0;
 
     edge e;
@@ -499,6 +524,8 @@ find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int max
     const int nmax = n_basic_blocks_for_fn (cfun);
     auto_sbitmap expr (nmax);
     auto_sbitmap reachable (nmax);
+    bitmap_clear (expr);
+    bitmap_clear (reachable);
 
     struct loop* loop = pre->loop_father;
     const bool dowhile = !loop_exits_from_bb_p (loop, pre);
@@ -664,11 +691,9 @@ find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
         std::sort(ctx.blocks, ctx.blocks + nblocks, index_lt);
         basic_block last = ctx.blocks[nblocks - 1];
 
-        FOR_EACH_EDGE (e, ei, last->succs)
-            ctx.blocks[nblocks++] = e->dest;
-
-
         if (nblocks <= CONDITIONS_MAX_TERMS) {
+            FOR_EACH_EDGE (e, ei, last->succs)
+                ctx.blocks[nblocks++] = e->dest;
             ctx.commit (pre, nblocks);
         } else {
             location_t loc = gimple_location (gsi_stmt (gsi_last_bb (pre)));
