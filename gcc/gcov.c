@@ -330,6 +330,9 @@ static unsigned program_count;
 static unsigned total_lines;
 static unsigned total_executed;
 
+static unsigned total_conditions;
+static unsigned total_conditions_covered;
+
 /* Modification time of graph file.  */
 
 static time_t bbg_file_time;
@@ -1070,6 +1073,8 @@ generate_results (const char *file_name)
       function_summary (&src->coverage, "File");
       total_lines += src->coverage.lines;
       total_executed += src->coverage.lines_executed;
+      total_conditions += src->coverage.conditions;
+      total_conditions_covered += src->coverage.conditions_covered;
       if (flag_gcov_file)
 	{
 	  output_gcov_file (file_name, src);
@@ -2473,6 +2478,7 @@ accumulate_line_counts (source_t *src)
 	  /* Sum the entry arcs.  */
 	  for (block = line->u.blocks; block; block = block->chain)
 	    {
+	      add_condition_counts (&src->coverage, block);
 	      arc_t *arc;
 
 	      for (arc = block->pred; arc; arc = arc->pred_next)
