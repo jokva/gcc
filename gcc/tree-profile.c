@@ -342,6 +342,21 @@ zero_accumulator_on_function_entry (tree accumulator, basic_block block)
         gsi_insert_on_edge (e, gimple_build_assign (accumulator, zero));
 }
 
+static bool
+is_conditional_p (const basic_block b)
+{
+    if (single_succ_p (b))
+        return false;
+
+    bool t = false;
+    bool f = false;
+    for (edge e : b->succs) {
+        t = t | (e->flags & EDGE_TRUE_VALUE);
+        f = f | (e->flags & EDGE_FALSE_VALUE);
+    }
+    return t && f;
+}
+
 static int
 find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block post, sbitmap expr)
 {
@@ -360,6 +375,12 @@ find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block po
 
         FOR_EACH_EDGE (e, ei, block->succs) {
             basic_block dest = e->dest;
+
+            /* don't consider exceptions and abnormal exits */
+            /* TODO: macro/function */
+            if (!(e->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE)))
+                continue;
+
             /* Skip loop edges, as they go outside the expression */
             if (dest == loop)
                 continue;
@@ -367,11 +388,7 @@ find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block po
             if (dest == post)
                 continue;
 
-            /* don't consider exceptions and abnormal exits */
-            if (!(e->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE)))
-                continue;
-
-            if (single_succ_p (dest))
+            if (!is_conditional_p (dest))
                 continue;
 
             /* already-seen, don't re-add */
@@ -500,24 +517,6 @@ dfsup1 (sbitmap reachable, basic_block pre, basic_block post, basic_block* stack
     }
 }
 
-static bool
-is_conditional_p (const basic_block b)
-{
-    if (single_succ_p (b))
-        return false;
-
-    edge e;
-    edge_iterator ei;
-    bool t = false;
-    bool f = false;
-    FOR_EACH_EDGE (e, ei, b->succs)
-    {
-        t = t | (e->flags & EDGE_TRUE_VALUE);
-        f = f | (e->flags & EDGE_FALSE_VALUE);
-    }
-    return t && f;
-}
-
 static int
 find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int maxsize)
 {
@@ -557,7 +556,7 @@ find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int max
             if (!bitmap_bit_p (expr, b->index))
                 continue;
 
-            if (single_succ_p (b)) {
+            if (!is_conditional_p (b)) {
                 bitmap_clear_bit (expr, b->index);
                 continue;
             }
@@ -690,12 +689,14 @@ find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
 
         post = get_immediate_dominator (CDI_POST_DOMINATORS, pre);
         int nblocks = find_first_expr (pre, post, ctx.blocks, ctx.maxelems);
+
+        basic_block last = pre;
         if (nblocks == 0)
-            continue;
+            goto next;
 
         // TODO: document
         std::sort(ctx.blocks, ctx.blocks + nblocks, index_lt);
-        basic_block last = ctx.blocks[nblocks - 1];
+        last = ctx.blocks[nblocks - 1];
 
         if (nblocks <= CONDITIONS_MAX_TERMS) {
             FOR_EACH_EDGE (e, ei, last->succs)
@@ -706,6 +707,7 @@ find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
             warning_at (loc, 0, "Too many conditions (found %d); giving up coverage", nblocks);
         }
 
+next:
         FOR_EACH_EDGE (e, ei, last->succs)
             find_conditions_between (ctx, e->dest, post);
     }
@@ -805,9 +807,21 @@ int instrument_decision (basic_block *blocks, int nblocks, int idx_decision)
     for (int iblock = 0; iblock < nblocks - 2; iblock++)
     {
         basic_block block = blocks[iblock];
-
-        if (single_succ_p (block))
+        // not part of expr, should not be here
+        // means find-expr brings more nodes than it should
+        // <- MONDAY: this is the symptom
+        if (!is_conditional_p (block)) {
+            location_t loc = gimple_location (gsi_stmt (gsi_last_bb (block)));
+            basic_block e1 = ENTRY_BLOCK_PTR_FOR_FN (cfun)->next_bb;
+            basic_block e2 = EXIT_BLOCK_PTR_FOR_FN (cfun);
+            print (e1, e2);
+            print (blocks, nblocks, "blocks: ");
+            error_at (loc, "block (index = %d) not conditional; should not be included", block->index);
             continue;
+        }
+
+        //if (single_succ_p (block))
+        //    continue;
 
         for (int k = 0; k < 2; k++)
         {
