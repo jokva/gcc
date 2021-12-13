@@ -187,10 +187,8 @@ chase_masked_conditions (
     basic_block *out,
     int maxsize)
 {
-    edge e;
-    edge_iterator ei;
     int n = 0;
-    FOR_EACH_EDGE (e, ei, block->preds) {
+    for (edge e : block->preds) {
         /*
          * Skip any predecessor not in the expression - there might be such an
          * edge to the enclosing expression or in the presence of loops, but
@@ -202,15 +200,14 @@ chase_masked_conditions (
         if (index_of (e->src, expr, nexpr) == -1)
             continue;
 
-        if (e->flags & flag[0])
+        if (e->flags & flag[0]) {
             out[n++] = e->src;
+        }
     }
 
-    for (int pos = 0; pos < n; pos++)
-    {
+    for (int pos = 0; pos < n; pos++) {
         block = out[pos];
-        FOR_EACH_EDGE (e, ei, block->preds)
-        {
+        for (edge e : block->preds) {
             /*
              * Stop on previously-seen node, since all its predecessor have
              * been added already. Maintaining it as a set also keeps the size
@@ -362,9 +359,6 @@ find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block po
 {
     gcc_assert (maxsize > 0);
 
-    edge e;
-    edge_iterator ei;
-
     basic_block loop = pre->loop_father->header;
     int n = 0;
     out[n++] = pre;
@@ -373,7 +367,7 @@ find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block po
     for (int pos = 0; pos < n; pos++) {
         basic_block block = out[pos];
 
-        FOR_EACH_EDGE (e, ei, block->succs) {
+        for (edge e : block->succs) {
             basic_block dest = e->dest;
 
             /* don't consider exceptions and abnormal exits */
@@ -408,12 +402,10 @@ find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block po
 static int
 find_expr_halo (basic_block* blocks, int nblocks)
 {
-    edge e;
-    edge_iterator ei;
     int n = 0;
     basic_block* exits = blocks + nblocks;
     for (int i = 0; i < nblocks; i++) {
-        FOR_EACH_EDGE (e, ei, blocks[i]->succs) {
+        for (edge e : blocks[i]->succs) {
             if (index_of (e->dest, blocks, nblocks + n) != -1)
                 continue;
 
@@ -475,13 +467,10 @@ dfsup (sbitmap reachable, basic_block pre, basic_block sink, basic_block* stack)
     if (bitmap_bit_p (reachable, pre->index))
         return;
 
-    edge e;
-    edge_iterator ei;
     stack[0] = pre;
     bitmap_set_bit (reachable, pre->index);
-
     for (int n = 0; n >= 0; n--) {
-        FOR_EACH_EDGE (e, ei, stack[n]->preds) {
+        for (edge e : stack[n]->preds) {
             if (bitmap_bit_p (reachable, e->src->index))
                 continue;
 
@@ -500,14 +489,11 @@ dfsup1 (sbitmap reachable, basic_block pre, basic_block post, basic_block* stack
     if (bitmap_bit_p (reachable, pre->index))
         return;
 
-    edge e;
-    edge_iterator ei;
     stack[0] = pre;
     bitmap_set_bit (reachable, pre->index);
     bitmap_set_bit (reachable, post->index);
-
     for (int n = 0; n >= 0; n--) {
-        FOR_EACH_EDGE (e, ei, stack[n]->preds) {
+        for (edge e : stack[n]->preds) {
             if (bitmap_bit_p (reachable, e->src->index))
                 continue;
 
@@ -676,9 +662,6 @@ find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int max
 static void
 find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
 {
-    edge e;
-    edge_iterator ei;
-
     basic_block pre;
     basic_block post;
     for (pre = entry ;; pre = post) {
@@ -699,7 +682,7 @@ find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
         last = ctx.blocks[nblocks - 1];
 
         if (nblocks <= CONDITIONS_MAX_TERMS) {
-            FOR_EACH_EDGE (e, ei, last->succs)
+            for (edge e : last->succs)
                 ctx.blocks[nblocks++] = e->dest;
             ctx.commit (pre, nblocks);
         } else {
@@ -708,7 +691,7 @@ find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
         }
 
 next:
-        FOR_EACH_EDGE (e, ei, last->succs)
+        for (edge e : last->succs)
             find_conditions_between (ctx, e->dest, post);
     }
 }
