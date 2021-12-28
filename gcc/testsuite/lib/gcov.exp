@@ -195,13 +195,21 @@ proc verify-branches { testname testcase file } {
 # If all conditions are covered i.e. n == m, then conditions(end) can be
 # omitted. If either true() or false() are empty they can be omitted too.
 #
+# C++ in particular can insert conditionals in the CFG that are not present in
+# source code. These must be manually suppressed since unexpected conditions
+# are an error (to help combat regressions). Output can be suppressed with
+# conditions(suppress) and conditions(end). (suppress) should usually be on a
+# closing brace.
+#
 proc verify-conditions { testname testcase file } {
     set failed 0
+    set suppress 0
     set shouldt ""
     set shouldf ""
     set shouldall ""
     set fd [open $file r]
     set n 0
+    set keywords {"end" "suppress"}
     while {[gets $fd line] >= 0} {
         regexp "^\[^:\]+: *(\[0-9\]+):" "$line" all n
         set prefix "$testname line $n"
@@ -214,16 +222,18 @@ proc verify-conditions { testname testcase file } {
         # only count it once for the report.
         set ok 1
         if [regexp {conditions\(([0-9a-z/]+)\)} "$line" all e] {
-
-            # *Very* coarse sanity check: conditions() should either be end or
-            # n/m, anything else means a buggy test case. end is optional for
-            # cases where all conditions are covered, since it only expects a
-            # single line of output.
-            if {($e == "end" || [regexp {\d+/\d+} "$e"]) == 0} {
-                fail "$prefix: expected conditions (n/m) or (end); was ($e)"
+            # *Very* coarse sanity check: conditions() should either be a
+            # keyword or n/m, anything else means a buggy test case. end is
+            # optional for cases where all conditions are covered, since it
+            # only expects a single line of output.
+            if {([lsearch -exact $keywords $e] >= 0 || [regexp {\d+/\d+} "$e"]) == 0} {
+                fail "$prefix: expected conditions (n/m), (suppress) or (end); was ($e)"
                 incr failed
                 continue
             }
+
+            # Any keyword means a new context. Set the error flag if not all
+            # expected output has been seen, and reset the state.
 
             if {[llength $shouldt] != 0} {
                 fail "$prefix: expected uncovered (true) for terms $shouldt"
@@ -240,7 +250,7 @@ proc verify-conditions { testname testcase file } {
                 set ok 0
             }
 
-            # Errors have been reported, so reset the state
+            set suppress 0
             set shouldt ""
             set shouldf ""
             set shouldall ""
@@ -266,7 +276,9 @@ proc verify-conditions { testname testcase file } {
                 set shouldt $newt
                 set shouldf $newf
             } elseif {$e == "end"} {
-                # no-op, everything has already been re-set
+                # no-op - state has already been reset, and errors flagged
+            } elseif {$e == "suppress"} {
+                set suppress 1
             } else {
                 # this should be unreachable, 
                 fail "$prefix: unhandled control ($e), should be unreachable"
@@ -280,6 +292,11 @@ proc verify-conditions { testname testcase file } {
                 fail "$testname line $n: unexpected uncovered term $cond (true)"
                 set ok 0
             }
+        } elseif {$suppress == 1} {
+            # ignore everything in a suppress block. C++ especially can insert
+            # conditionals in exceptions and destructors which would otherwise
+            # be considered unhandled.
+            continue
         } elseif [regexp {condition +(\d+) not covered \(false\)} "$line" all cond] {
             set i [lsearch $shouldf $cond]
             if {$i != -1} {
