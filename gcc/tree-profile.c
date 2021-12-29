@@ -559,12 +559,12 @@ find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int max
         return 1;
     }
 
-    int nblocks = find_expr_limits (pre, blocks, maxsize, post, expr);
+    const int nblocks = find_expr_limits (pre, blocks, maxsize, post, expr);
     if (nblocks < 2)
         return nblocks;
 
     /* record all nodes immediately outside of */
-    int nexits = find_expr_halo (blocks, nblocks);
+    const int nexits = find_expr_halo (blocks, nblocks);
     if (nexits == 2)
         return nblocks;
 
@@ -585,9 +585,7 @@ find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int max
     for (int i = 0; i < nblocks; i++)
         if (bitmap_bit_p (expr, blocks[i]->index))
             blocks[k++] = blocks[i];
-    nblocks = k;
-
-    return nblocks;
+    return k;
 }
 
 /*
