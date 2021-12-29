@@ -96,6 +96,13 @@ void mcdc004c (int a)
       x = 1;
 }
 
+void mcdc004d (int a, int b, int c) {
+    if (a) { /* conditions(2/2) */
+        if (b || c) /* conditions(1/4) true(1) false(0 1) */
+            x = a + b + c;
+    }
+}
+
 /* mixing && and || works */
 void mcdc005a (int a, int b, int c)
 {
@@ -427,7 +434,7 @@ void mcdc017c (int a, int b)
 int id  (int x) { return  x; }
 int inv (int x) { return !x; }
 
-/* collection of odd cases lifted-and-adapted from real-world cases */
+/* collection of odd cases lifted-and-adapted from real-world code */
 int mcdc018a (int a, int b, int c, int d, int e, int f, int g, int len)
 {
     int n;
@@ -480,6 +487,8 @@ void mcdc018b (int a, int b, int c) {
 /* too many conditions, so coverage gives up */
 void mcdc019a () {
     int conds[65] = { 0 };
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wcoverage-too-many-conditions"
     x = conds[ 0] || conds[ 1] || conds[ 2] || conds[ 3] || conds[ 4] ||
         conds[ 5] || conds[ 6] || conds[ 7] || conds[ 8] || conds[ 9] ||
         conds[10] || conds[11] || conds[12] || conds[13] || conds[14] ||
@@ -494,6 +503,7 @@ void mcdc019a () {
         conds[55] || conds[56] || conds[57] || conds[58] || conds[59] ||
         conds[60] || conds[61] || conds[62] || conds[63] || conds[64]
     ;
+    #pragma GCC diagnostic pop
 }
 
 
@@ -526,6 +536,9 @@ int main ()
   mcdc004b (0);
   mcdc004b (1);
   mcdc004c (1);
+
+  mcdc004d (0, 0, 0);
+  mcdc004d (1, 1, 1);
 
   mcdc005a (1, 0, 1);
 

@@ -71,54 +71,6 @@ static GTY(()) tree ic_void_ptr_var;
 static GTY(()) tree ic_gcov_type_ptr_var;
 static GTY(()) tree ptr_void;
 
-namespace {
-
-struct mcdc_ctx {
-    /* output arrays */
-    basic_block *blocks;
-    int *sizes;
-
-    /* the size of the blocks buffer */
-    int maxelems;
-
-    /*
-     * number of expressions found; how many counters must be allocated.
-     *
-     * must be smaller than maxelem. Describes the number of blocks+sizes
-     * written.
-     *
-     * Can be replaced by popcount (seen)
-     */
-    int exprs;
-
-    /*
-     * dominating or first-in-expr basic blocks seen; this effectively stops
-     * loop edges from being taken again
-     */
-    auto_sbitmap seen;
-
-    explicit mcdc_ctx (unsigned size) : maxelems (0), exprs (0), seen (size)
-    {
-        bitmap_clear (seen);
-    }
-
-    void commit (basic_block top, int nblocks) {
-        blocks   += nblocks;
-        *sizes   += nblocks;
-        maxelems -= nblocks;
-
-        exprs++;
-        sizes++;
-        *sizes = 0;
-
-        bitmap_set_bit (seen, top->index);
-    }
-};
-
-}
-
-#define CONDITIONS_MAX_TERMS 64
-
 void print(const basic_block* blocks, int size, const char* s = "") {
     return;
     printf("%s [ ", s);
@@ -153,7 +105,62 @@ void print(edge e) {
     printf ("====             ====\n");
 }
 
-static int
+
+namespace {
+
+struct varcache {
+    auto_sbitmap expr;
+    auto_sbitmap reachable;
+
+    explicit varcache (unsigned size) : expr (size), reachable (size) {}
+};
+
+struct mcdc_ctx {
+    /* output arrays */
+    basic_block *blocks;
+    int *sizes;
+
+    /* the size of the blocks buffer */
+    int maxelems;
+
+    /*
+     * number of expressions found; how many counters must be allocated.
+     *
+     * must be smaller than maxelem. Describes the number of blocks+sizes
+     * written.
+     *
+     * Can be replaced by popcount (seen)
+     */
+    int exprs;
+
+    /*
+     * dominating or first-in-expr basic blocks seen; this effectively stops
+     * loop edges from being taken again
+     */
+    auto_sbitmap seen;
+    varcache cache;
+
+    explicit mcdc_ctx (unsigned size) : maxelems (0), exprs (0), seen (size), cache (size)
+    {
+        bitmap_clear (seen);
+    }
+
+    void commit (basic_block top, int nblocks) {
+        blocks   += nblocks;
+        *sizes   += nblocks;
+        maxelems -= nblocks;
+
+        exprs++;
+        sizes++;
+        *sizes = 0;
+
+        bitmap_set_bit (seen, top->index);
+    }
+};
+
+#define CONDITIONS_MAX_TERMS 64
+
+int
 index_of (const_basic_block needle, const const_basic_block* blocks, int size)
 {
     for (int i = 0; i < size; i++) {
@@ -163,17 +170,20 @@ index_of (const_basic_block needle, const const_basic_block* blocks, int size)
     return -1;
 }
 
-static bool
+bool
 index_lt (const basic_block x, const basic_block y)
 {
     return x->index < y->index;
 }
 
 /*
- * Find masked conditions
+ * Find masked conditions. This is a search up the CFG that:
+ *
+ * * For the first set of predecessors follows flag edges
+ * * For all other ancestors follow !flag
  */
-static int
-chase_masked_conditions (
+int
+find_masked_conditions (
     basic_block block,
     const basic_block *expr,
     int nexpr,
@@ -200,15 +210,23 @@ chase_masked_conditions (
             out[n++] = e->src;
     }
 
-    for (int pos = 0; pos < n; pos++)
-    {
+    /*
+     * This function conceptually outputs a set, but one value is special - the
+     * source of the edge that triggers the masking.
+     */
+    if (n > 1) {
+        basic_block *top = std::max_element (out, out + n, index_lt);
+        std::swap (*top, *out);
+    }
+
+    for (int pos = 0; pos < n; pos++) {
         block = out[pos];
         FOR_EACH_EDGE (e, ei, block->preds)
         {
             /*
              * Stop on previously-seen node, since all its predecessor have
              * been added already. Maintaining it as a set also keeps the size
-             * of the output bounded to the size of the expression.
+             * of the output bound by the size of the expression.
              */
             if (index_of (e->src, out, n) != -1)
                 continue;
@@ -219,8 +237,7 @@ chase_masked_conditions (
             if (e->flags & flag[1])
                 out[n++] = e->src;
 
-            if (n == maxsize)
-                return -1;
+            gcc_assert (n < maxsize);
         }
     }
 
@@ -279,12 +296,16 @@ chase_masked_conditions (
  * the edge AB is false.
  */
 
-static void
+void
 mask_dontcare_subexprs (const basic_block* blocks, gcov_type_unsigned* masks, int nblocks)
 {
+    const unsigned flags[] = {
+        EDGE_TRUE_VALUE,
+        EDGE_FALSE_VALUE,
+        EDGE_TRUE_VALUE,
+    };
 
     memset (masks, 0, sizeof (*masks) * nblocks * 2);
-
     basic_block eblocks[CONDITIONS_MAX_TERMS];
     for (int i = 0; i < nblocks; i++)
     {
@@ -293,32 +314,18 @@ mask_dontcare_subexprs (const basic_block* blocks, gcov_type_unsigned* masks, in
         if (single_pred_p (block))
             continue;
 
-        const unsigned flags[] = {
-            EDGE_TRUE_VALUE,
-            EDGE_FALSE_VALUE,
-            EDGE_TRUE_VALUE,
-        };
-
         for (int k = 0; k < 2; k++)
         {
-            int n = chase_masked_conditions
+            const int n = find_masked_conditions
                 (block, blocks, nblocks, flags + k, eblocks, CONDITIONS_MAX_TERMS);
 
             if (n < 2)
                 continue;
 
-            basic_block highest = eblocks[0];
-            for (int i = 1; i < n; i++)
-                if (eblocks[i]->index > highest->index)
-                    highest = eblocks[i];
-
-            const int idst = index_of (highest, blocks, nblocks);
+            const int idst = index_of (eblocks[0], blocks, nblocks);
             gcc_assert (idst != -1);
 
-            for (int i = 0; i < n; i++) {
-                if (highest == eblocks[i])
-                    continue;
-
+            for (int i = 1; i < n; i++) {
                 const int pos = index_of (eblocks[i], blocks, nblocks);
                 masks[2*idst + k] |= gcov_type_unsigned (1) << pos;
             }
@@ -326,7 +333,7 @@ mask_dontcare_subexprs (const basic_block* blocks, gcov_type_unsigned* masks, in
     }
 }
 
-static void
+void
 zero_accumulator_on_function_entry (tree accumulator, basic_block block)
 {
     edge e;
@@ -336,7 +343,7 @@ zero_accumulator_on_function_entry (tree accumulator, basic_block block)
         gsi_insert_on_edge (e, gimple_build_assign (accumulator, zero));
 }
 
-static bool
+bool
 is_conditional_p (const basic_block b)
 {
     if (single_succ_p (b))
@@ -344,16 +351,16 @@ is_conditional_p (const basic_block b)
 
     edge e;
     edge_iterator ei;
-    bool t = false;
-    bool f = false;
+    unsigned t = 0;
+    unsigned f = 0;
     FOR_EACH_EDGE (e, ei, b->succs) {
-        t = t | (e->flags & EDGE_TRUE_VALUE);
-        f = f | (e->flags & EDGE_FALSE_VALUE);
+        t |= (e->flags & EDGE_TRUE_VALUE);
+        f |= (e->flags & EDGE_FALSE_VALUE);
     }
     return t && f;
 }
 
-static int
+int
 find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block post, sbitmap expr)
 {
     gcc_assert (maxsize > 0);
@@ -401,8 +408,8 @@ find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block po
     return n;
 }
 
-static int
-find_expr_halo (basic_block* blocks, int nblocks)
+int
+find_expr_halo (basic_block* blocks, int nblocks, sbitmap reachable)
 {
     edge e;
     edge_iterator ei;
@@ -410,9 +417,10 @@ find_expr_halo (basic_block* blocks, int nblocks)
     basic_block* exits = blocks + nblocks;
     for (int i = 0; i < nblocks; i++) {
         FOR_EACH_EDGE (e, ei, blocks[i]->succs) {
-            if (index_of (e->dest, blocks, nblocks + n) != -1)
+            if (bitmap_bit_p (reachable, e->dest->index))
                 continue;
 
+            bitmap_set_bit (reachable, e->dest->index);
             exits[n++] = e->dest;
         }
     }
@@ -465,37 +473,9 @@ find_expr_halo (basic_block* blocks, int nblocks)
  *   E ----> o // predecessor outside [B, e)
  */
 
-static void
-dfsup (sbitmap reachable, basic_block pre, basic_block sink, basic_block* stack)
-{
-    if (bitmap_bit_p (reachable, pre->index))
-        return;
-
-    edge e;
-    edge_iterator ei;
-    stack[0] = pre;
-    bitmap_set_bit (reachable, pre->index);
-
-    for (int n = 0; n >= 0; n--) {
-        FOR_EACH_EDGE (e, ei, stack[n]->preds) {
-            if (bitmap_bit_p (reachable, e->src->index))
-                continue;
-
-            if (!dominated_by_p (CDI_POST_DOMINATORS, e->src, sink))
-                continue;
-
-            bitmap_set_bit (reachable, e->src->index);
-            stack[n++] = e->src;
-        }
-    }
-}
-
-static void
+void
 dfsup1 (sbitmap reachable, basic_block pre, basic_block post, basic_block* stack)
 {
-    if (bitmap_bit_p (reachable, pre->index))
-        return;
-
     edge e;
     edge_iterator ei;
     stack[0] = pre;
@@ -507,108 +487,44 @@ dfsup1 (sbitmap reachable, basic_block pre, basic_block post, basic_block* stack
             if (bitmap_bit_p (reachable, e->src->index))
                 continue;
 
+            /* ignore any loop edges */
+            if (dominated_by_p (CDI_DOMINATORS, e->src, e->dest))
+                continue;
+
             bitmap_set_bit (reachable, e->src->index);
             stack[n++] = e->src;
         }
     }
 }
 
-static int
-find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int maxsize)
+int
+find_first_expr (mcdc_ctx& ctx, basic_block pre, basic_block post)
 {
-    if (!is_conditional_p (pre))
-        return 0;
-
+    basic_block* blocks = ctx.blocks;
+    sbitmap expr = ctx.cache.expr;
+    sbitmap reachable = ctx.cache.reachable;
+    bitmap_clear (expr);
+    bitmap_clear (reachable);
     edge e;
     edge_iterator ei;
 
-    const int nmax = n_basic_blocks_for_fn (cfun);
-    auto_sbitmap expr (nmax);
-    auto_sbitmap reachable (nmax);
-    bitmap_clear (expr);
-    bitmap_clear (reachable);
+    const bool dowhile = !loop_exits_from_bb_p (pre->loop_father, pre);
+    const bool isloop = bb_loop_header_p (pre) && !dowhile;
 
-    struct loop* loop = pre->loop_father;
-    const bool dowhile = !loop_exits_from_bb_p (loop, pre);
-    if (bb_loop_header_p (pre) && !dowhile) {
-        /* if this is a do-while loop, the loop-condition goes to latch */
-        /* TODO: document why it does not apply to do-while */
-        basic_block loopexit = NULL;
-        FOR_EACH_EDGE (e, ei, pre->succs) {
-            if (loop_exit_edge_p (loop, e)) {
-                loopexit = e->dest;
-                break;
-            }
-        }
-        gcc_assert (loopexit);
-
-        dfsup1 (expr, loopexit, pre, blocks);
-        FOR_EACH_EDGE (e, ei, pre->preds)
-            if (dominated_by_p (CDI_DOMINATORS, e->src, pre))
-                bitmap_set_bit (expr, e->src->index);
-
-        basic_block b;
-        FOR_BB_BETWEEN (b, pre, post, next_bb) {
-            if (!bitmap_bit_p (expr, b->index))
-                continue;
-
-            if (!is_conditional_p (b)) {
-                bitmap_clear_bit (expr, b->index);
-                continue;
-            }
-
-            FOR_EACH_EDGE (e, ei, b->succs) {
-                if (!bitmap_bit_p (expr, e->dest->index)) {
-                    bitmap_clear_bit (expr, b->index);
-                    break;
-                }
-            }
-        }
-        /*
-         * The post dominator bit will be when walking the graph, but should
-         * never be in the output. The pre/entry node *must* be, but since the
-         * graph is walked "upwards" with the pre as bound, it is never
-         * included.
-         */
-        bitmap_clear_bit (expr, post->index);
-        bitmap_set_bit (expr, pre->index);
-
-        int k = 0;
-        FOR_BB_BETWEEN (b, pre, post, next_bb)
-            if (bitmap_bit_p (expr, b->index))
-                blocks[k++] = b;
-
-        return k;
-    }
-
-    int nblocks = find_expr_limits (pre, blocks, maxsize, post, expr);
-
-    // <-- only need this bit!!
-    // problem is conditional-in-loop because nothing prunes children
-    if (nblocks == 1)
+    if (find_edge (pre, post) && !isloop) {
+        blocks[0] = pre;
         return 1;
-
-    FOR_EACH_EDGE (e, ei, post->preds) {
-        if (!dominated_by_p (CDI_DOMINATORS, e->src, pre))
-            continue;
-
-        bitmap_clear (reachable);
-        bitmap_set_bit (reachable, pre->index);
-        dfsup (reachable, e->src, post, blocks + nblocks);
-        bitmap_and (expr, expr, reachable);
     }
 
-    int k = 0;
-    for (int i = 0; i < nblocks; i++)
-        if (bitmap_bit_p (expr, blocks[i]->index))
-            blocks[k++] = blocks[i];
-    nblocks = k;
-
-    if (nblocks < 2)
+    const int nblocks = find_expr_limits
+        (pre, blocks, ctx.maxelems, post, expr);
+    if (nblocks == 1)
         return nblocks;
 
-    /* record all nodes immediately outside of */
-    int nexits = find_expr_halo (blocks, nblocks);
+    /* record all nodes immediately outside */
+    // TODO: document CFG that makes this happen
+    bitmap_copy (reachable, expr);
+    const int nexits = find_expr_halo (blocks, nblocks, reachable);
     if (nexits == 2)
         return nblocks;
 
@@ -621,17 +537,39 @@ find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int max
 
             bitmap_clear (reachable);
             dfsup1 (reachable, e->src, pre, exits + nexits);
+            edge f; edge_iterator ef;
+            FOR_EACH_EDGE (f, ef, exits[i]->preds)
+                bitmap_set_bit (reachable, f->src->index);
             bitmap_and (expr, expr, reachable);
         }
     }
 
-    k = 0;
+    int k = 0;
     for (int i = 0; i < nblocks; i++)
         if (bitmap_bit_p (expr, blocks[i]->index))
             blocks[k++] = blocks[i];
-    nblocks = k;
+    return k;
+}
 
-    return nblocks;
+void
+emit_bitexpr (edge e, tree lhs, tree op1, tree_code op, tree op2)
+{
+    tree tmp;
+    gassign *read;
+    gassign *bitw;
+    gassign *write;
+    /*
+     * insert lhs = op1 <bit-op> op2, e.g. lhs = op1 | op2
+     */
+    tmp   = make_temp_ssa_name  (gcov_type_node, NULL, "__mcdc_tmp");
+    read  = gimple_build_assign (tmp, op1);
+    tmp   = make_temp_ssa_name  (gcov_type_node, NULL, "__mcdc_tmp");
+    bitw  = gimple_build_assign (tmp, op, gimple_assign_lhs (read), op2);
+    write = gimple_build_assign (lhs, gimple_assign_lhs (bitw));
+
+    gsi_insert_on_edge (e, read);
+    gsi_insert_on_edge (e, bitw);
+    gsi_insert_on_edge (e, write);
 }
 
 /*
@@ -669,7 +607,7 @@ find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int max
  * TODO: describe output
  */
 
-static void
+void
 find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
 {
     edge e;
@@ -684,28 +622,39 @@ find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
             break;
 
         post = get_immediate_dominator (CDI_POST_DOMINATORS, pre);
-        int nblocks = find_first_expr (pre, post, ctx.blocks, ctx.maxelems);
+        if (!is_conditional_p (pre)) {
+            FOR_EACH_EDGE (e, ei, pre->succs)
+                find_conditions_between (ctx, e->dest, post);
+            continue;
+        }
 
-        basic_block last = pre;
-        if (nblocks == 0)
-            goto next;
-
-        // TODO: document
-        std::sort(ctx.blocks, ctx.blocks + nblocks, index_lt);
-        last = ctx.blocks[nblocks - 1];
-
+        int nblocks = find_first_expr (ctx, pre, post);
+        /*
+         * Found an expression, but the blocks (and by extension, terms)
+         * might be in the wrong order depending on how the CFG was
+         * traversed. Fix this by sorting by block index, i.e. assume that
+         * the lower-index'd block is to the left in the boolean
+         * expression.
+         */
+        std::sort (ctx.blocks, ctx.blocks + nblocks, index_lt);
+        basic_block last = ctx.blocks[nblocks - 1];
         if (nblocks <= CONDITIONS_MAX_TERMS) {
+            gcc_assert (EDGE_COUNT (last->succs) == 2);
             FOR_EACH_EDGE (e, ei, last->succs)
                 ctx.blocks[nblocks++] = e->dest;
+
             ctx.commit (pre, nblocks);
         } else {
             location_t loc = gimple_location (gsi_stmt (gsi_last_bb (pre)));
-            warning_at (loc, 0, "Too many conditions (found %d); giving up coverage", nblocks);
+            warning_at
+                (loc, OPT_Wcoverage_too_many_conditions,
+                 "Too many conditions (found %d); giving up coverage", nblocks);
         }
-next:
         FOR_EACH_EDGE (e, ei, last->succs)
             find_conditions_between (ctx, e->dest, post);
     }
+}
+
 }
 
 int
@@ -735,27 +684,6 @@ find_condition_blocks (
         sizes[i + 1] += sizes[i];
 
     return ctx.exprs;
-}
-
-static void
-emit_bitexpr (edge e, tree lhs, tree op1, tree_code op, tree op2)
-{
-    tree tmp;
-    gassign *read;
-    gassign *bitw;
-    gassign *write;
-    /*
-     * insert lhs = op1 <bit-op> op2, e.g. lhs = op1 | op2
-     */
-    tmp   = make_temp_ssa_name  (gcov_type_node, NULL, "__mcdc_tmp");
-    read  = gimple_build_assign (tmp, op1);
-    tmp   = make_temp_ssa_name  (gcov_type_node, NULL, "__mcdc_tmp");
-    bitw  = gimple_build_assign (tmp, op, gimple_assign_lhs (read), op2);
-    write = gimple_build_assign (lhs, gimple_assign_lhs (bitw));
-
-    gsi_insert_on_edge (e, read);
-    gsi_insert_on_edge (e, bitw);
-    gsi_insert_on_edge (e, write);
 }
 
 int instrument_decision (basic_block *blocks, int nblocks, int idx_decision)
@@ -802,22 +730,6 @@ int instrument_decision (basic_block *blocks, int nblocks, int idx_decision)
     for (int iblock = 0; iblock < nblocks - 2; iblock++)
     {
         basic_block block = blocks[iblock];
-        // not part of expr, should not be here
-        // means find-expr brings more nodes than it should
-        // <- MONDAY: this is the symptom
-        if (!is_conditional_p (block)) {
-            location_t loc = gimple_location (gsi_stmt (gsi_last_bb (block)));
-            basic_block e1 = ENTRY_BLOCK_PTR_FOR_FN (cfun)->next_bb;
-            basic_block e2 = EXIT_BLOCK_PTR_FOR_FN (cfun);
-            print (e1, e2);
-            print (blocks, nblocks, "blocks: ");
-            error_at (loc, "block (index = %d) not conditional; should not be included", block->index);
-            continue;
-        }
-
-        //if (single_succ_p (block))
-        //    continue;
-
         for (int k = 0; k < 2; k++)
         {
             edge e = EDGE_SUCC (block, k);
