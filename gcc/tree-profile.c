@@ -348,11 +348,11 @@ is_conditional_p (const basic_block b)
     if (single_succ_p (b))
         return false;
 
-    bool t = false;
-    bool f = false;
+    unsigned t = 0;
+    unsigned f = 0;
     for (edge e : b->succs) {
-        t = t | (e->flags & EDGE_TRUE_VALUE);
-        f = f | (e->flags & EDGE_FALSE_VALUE);
+        t |= (e->flags & EDGE_TRUE_VALUE);
+        f |= (e->flags & EDGE_FALSE_VALUE);
     }
     return t && f;
 }
