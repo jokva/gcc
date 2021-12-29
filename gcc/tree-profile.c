@@ -234,8 +234,7 @@ find_masked_conditions (
             if (e->flags & flag[1])
                 out[n++] = e->src;
 
-            if (n == maxsize)
-                return -1;
+            gcc_assert (n < maxsize);
         }
     }
 
@@ -317,7 +316,6 @@ mask_dontcare_subexprs (const basic_block* blocks, gcov_type_unsigned* masks, in
             const int n = find_masked_conditions
                 (block, blocks, nblocks, flags + k, eblocks, CONDITIONS_MAX_TERMS);
 
-            gcc_assert (n != -1);
             if (n < 2)
                 continue;
 
