@@ -673,24 +673,33 @@ find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
         post = get_immediate_dominator (CDI_POST_DOMINATORS, pre);
         int nblocks = find_first_expr (pre, post, ctx.blocks, ctx.maxelems);
 
-        basic_block last = pre;
-        if (nblocks == 0)
-            goto next;
+        if (!nblocks) {
+            for (edge e : pre->succs)
+                find_conditions_between (ctx, e->dest, post);
+            continue;
+        }
 
-        // TODO: document
-        std::sort(ctx.blocks, ctx.blocks + nblocks, index_lt);
-        last = ctx.blocks[nblocks - 1];
-
+        /*
+         * Found an expression, but the blocks (and by extension, terms)
+         * might be in the wrong order depending on how the CFG was
+         * traversed. Fix this by sorting by block index, i.e. assume that
+         * the lower-index'd block is to the left in the boolean
+         * expression.
+         */
+        std::sort (ctx.blocks, ctx.blocks + nblocks, index_lt);
+        basic_block last = ctx.blocks[nblocks - 1];
         if (nblocks <= CONDITIONS_MAX_TERMS) {
+            /* TODO: Will any node have more than two exits? */
+            gcc_assert (EDGE_COUNT (last->succs) == 2);
             for (edge e : last->succs)
                 ctx.blocks[nblocks++] = e->dest;
+
             ctx.commit (pre, nblocks);
         } else {
             location_t loc = gimple_location (gsi_stmt (gsi_last_bb (pre)));
             warning_at (loc, 0, "Too many conditions (found %d); giving up coverage", nblocks);
         }
 
-next:
         for (edge e : last->succs)
             find_conditions_between (ctx, e->dest, post);
     }
