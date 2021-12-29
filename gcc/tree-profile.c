@@ -176,10 +176,13 @@ index_lt (const basic_block x, const basic_block y)
 }
 
 /*
- * Find masked conditions
+ * Find masked conditions. This is a search up the CFG that:
+ *
+ * * For the first set of predecessors follows flag edges
+ * * For all other ancestors follow !flag
  */
 static int
-chase_masked_conditions (
+find_masked_conditions (
     basic_block block,
     const basic_block *expr,
     int nexpr,
@@ -205,13 +208,22 @@ chase_masked_conditions (
         }
     }
 
+    /*
+     * This function conceptually outputs a set, but one value is special - the
+     * source of the edge that triggers the masking.
+     */
+    if (n > 1) {
+        basic_block *top = std::max_element (out, out + n, index_lt);
+        std::swap (*top, *out);
+    }
+
     for (int pos = 0; pos < n; pos++) {
         block = out[pos];
         for (edge e : block->preds) {
             /*
              * Stop on previously-seen node, since all its predecessor have
              * been added already. Maintaining it as a set also keeps the size
-             * of the output bounded to the size of the expression.
+             * of the output bound by the size of the expression.
              */
             if (index_of (e->src, out, n) != -1)
                 continue;
@@ -285,9 +297,13 @@ chase_masked_conditions (
 static void
 mask_dontcare_subexprs (const basic_block* blocks, gcov_type_unsigned* masks, int nblocks)
 {
+    const unsigned flags[] = {
+        EDGE_TRUE_VALUE,
+        EDGE_FALSE_VALUE,
+        EDGE_TRUE_VALUE,
+    };
 
     memset (masks, 0, sizeof (*masks) * nblocks * 2);
-
     basic_block eblocks[CONDITIONS_MAX_TERMS];
     for (int i = 0; i < nblocks; i++)
     {
@@ -296,32 +312,19 @@ mask_dontcare_subexprs (const basic_block* blocks, gcov_type_unsigned* masks, in
         if (single_pred_p (block))
             continue;
 
-        const unsigned flags[] = {
-            EDGE_TRUE_VALUE,
-            EDGE_FALSE_VALUE,
-            EDGE_TRUE_VALUE,
-        };
-
         for (int k = 0; k < 2; k++)
         {
-            int n = chase_masked_conditions
+            const int n = find_masked_conditions
                 (block, blocks, nblocks, flags + k, eblocks, CONDITIONS_MAX_TERMS);
 
+            gcc_assert (n != -1);
             if (n < 2)
                 continue;
 
-            basic_block highest = eblocks[0];
-            for (int i = 1; i < n; i++)
-                if (eblocks[i]->index > highest->index)
-                    highest = eblocks[i];
-
-            const int idst = index_of (highest, blocks, nblocks);
+            const int idst = index_of (eblocks[0], blocks, nblocks);
             gcc_assert (idst != -1);
 
-            for (int i = 0; i < n; i++) {
-                if (highest == eblocks[i])
-                    continue;
-
+            for (int i = 1; i < n; i++) {
                 const int pos = index_of (eblocks[i], blocks, nblocks);
                 masks[2*idst + k] |= gcov_type_unsigned (1) << pos;
             }
