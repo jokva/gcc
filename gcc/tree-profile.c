@@ -463,28 +463,6 @@ find_expr_halo (basic_block* blocks, int nblocks)
  */
 
 static void
-dfsup (sbitmap reachable, basic_block pre, basic_block sink, basic_block* stack)
-{
-    if (bitmap_bit_p (reachable, pre->index))
-        return;
-
-    stack[0] = pre;
-    bitmap_set_bit (reachable, pre->index);
-    for (int n = 0; n >= 0; n--) {
-        for (edge e : stack[n]->preds) {
-            if (bitmap_bit_p (reachable, e->src->index))
-                continue;
-
-            if (!dominated_by_p (CDI_POST_DOMINATORS, e->src, sink))
-                continue;
-
-            bitmap_set_bit (reachable, e->src->index);
-            stack[n++] = e->src;
-        }
-    }
-}
-
-static void
 dfsup1 (sbitmap reachable, basic_block pre, basic_block post, basic_block* stack)
 {
     if (bitmap_bit_p (reachable, pre->index))
@@ -572,29 +550,16 @@ find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int max
         return k;
     }
 
-    int nblocks = find_expr_limits (pre, blocks, maxsize, post, expr);
-
-    // <-- only need this bit!!
-    // problem is conditional-in-loop because nothing prunes children
-    if (nblocks == 1)
+    /*
+     * There's no loop and a direct edge between pre and post, so this must be
+     * a single-term conditional with no else.
+     */
+    if (find_edge (pre, post)) {
+        blocks[0] = pre;
         return 1;
-
-    FOR_EACH_EDGE (e, ei, post->preds) {
-        if (!dominated_by_p (CDI_DOMINATORS, e->src, pre))
-            continue;
-
-        bitmap_clear (reachable);
-        bitmap_set_bit (reachable, pre->index);
-        dfsup (reachable, e->src, post, blocks + nblocks);
-        bitmap_and (expr, expr, reachable);
     }
 
-    int k = 0;
-    for (int i = 0; i < nblocks; i++)
-        if (bitmap_bit_p (expr, blocks[i]->index))
-            blocks[k++] = blocks[i];
-    nblocks = k;
-
+    int nblocks = find_expr_limits (pre, blocks, maxsize, post, expr);
     if (nblocks < 2)
         return nblocks;
 
@@ -616,7 +581,7 @@ find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int max
         }
     }
 
-    k = 0;
+    int k = 0;
     for (int i = 0; i < nblocks; i++)
         if (bitmap_bit_p (expr, blocks[i]->index))
             blocks[k++] = blocks[i];

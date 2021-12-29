@@ -96,6 +96,12 @@ void mcdc004c (int a)
       x = 1;
 }
 
+void mcdc004d (int a, int b, int c) {
+    if (a) /* conditions(2/2) */
+    if (b || c) /* conditions(1/4) true(1) false(0 1) */
+        x = a + b + c;
+}
+
 /* mixing && and || works */
 void mcdc005a (int a, int b, int c)
 {
@@ -526,6 +532,9 @@ int main ()
   mcdc004b (0);
   mcdc004b (1);
   mcdc004c (1);
+
+  mcdc004d (0, 0, 0);
+  mcdc004d (1, 1, 1);
 
   mcdc005a (1, 0, 1);
 
