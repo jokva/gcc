@@ -466,15 +466,16 @@ find_expr_halo (basic_block* blocks, int nblocks, sbitmap reachable)
 static void
 dfsup1 (sbitmap reachable, basic_block pre, basic_block post, basic_block* stack)
 {
-    if (bitmap_bit_p (reachable, pre->index))
-        return;
-
     stack[0] = pre;
     bitmap_set_bit (reachable, pre->index);
     bitmap_set_bit (reachable, post->index);
     for (int n = 0; n >= 0; n--) {
         for (edge e : stack[n]->preds) {
             if (bitmap_bit_p (reachable, e->src->index))
+                continue;
+
+            /* ignore any loop edges */
+            if (dominated_by_p (CDI_DOMINATORS, e->src, e->dest))
                 continue;
 
             bitmap_set_bit (reachable, e->src->index);
@@ -489,9 +490,6 @@ find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int max
     if (!is_conditional_p (pre))
         return 0;
 
-    edge e;
-    edge_iterator ei;
-
     const int nmax = n_basic_blocks_for_fn (cfun);
     auto_sbitmap expr (nmax);
     auto_sbitmap reachable (nmax);
@@ -500,62 +498,9 @@ find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int max
 
     struct loop* loop = pre->loop_father;
     const bool dowhile = !loop_exits_from_bb_p (loop, pre);
-    if (bb_loop_header_p (pre) && !dowhile) {
-        /* if this is a do-while loop, the loop-condition goes to latch */
-        /* TODO: document why it does not apply to do-while */
-        basic_block loopexit = NULL;
-        FOR_EACH_EDGE (e, ei, pre->succs) {
-            if (loop_exit_edge_p (loop, e)) {
-                loopexit = e->dest;
-                break;
-            }
-        }
-        gcc_assert (loopexit);
+    const bool isloop = bb_loop_header_p (pre) && !dowhile;
 
-        dfsup1 (expr, loopexit, pre, blocks);
-        FOR_EACH_EDGE (e, ei, pre->preds)
-            if (dominated_by_p (CDI_DOMINATORS, e->src, pre))
-                bitmap_set_bit (expr, e->src->index);
-
-        basic_block b;
-        FOR_BB_BETWEEN (b, pre, post, next_bb) {
-            if (!bitmap_bit_p (expr, b->index))
-                continue;
-
-            if (!is_conditional_p (b)) {
-                bitmap_clear_bit (expr, b->index);
-                continue;
-            }
-
-            FOR_EACH_EDGE (e, ei, b->succs) {
-                if (!bitmap_bit_p (expr, e->dest->index)) {
-                    bitmap_clear_bit (expr, b->index);
-                    break;
-                }
-            }
-        }
-        /*
-         * The post dominator bit will be when walking the graph, but should
-         * never be in the output. The pre/entry node *must* be, but since the
-         * graph is walked "upwards" with the pre as bound, it is never
-         * included.
-         */
-        bitmap_clear_bit (expr, post->index);
-        bitmap_set_bit (expr, pre->index);
-
-        int k = 0;
-        FOR_BB_BETWEEN (b, pre, post, next_bb)
-            if (bitmap_bit_p (expr, b->index))
-                blocks[k++] = b;
-
-        return k;
-    }
-
-    /*
-     * There's no loop and a direct edge between pre and post, so this must be
-     * a single-term conditional with no else.
-     */
-    if (find_edge (pre, post)) {
+    if (find_edge (pre, post) && !isloop) {
         blocks[0] = pre;
         return 1;
     }
@@ -574,12 +519,14 @@ find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int max
     /* then, dfs + intersect from there */
     basic_block *exits = blocks + nblocks;
     for (int i = 0; i < nexits; i++) {
-        FOR_EACH_EDGE (e, ei, exits[i]->preds) {
+        for (edge e : exits[i]->preds) {
             if (!dominated_by_p (CDI_DOMINATORS, e->src, pre))
                 continue;
 
             bitmap_clear (reachable);
             dfsup1 (reachable, e->src, pre, exits + nexits);
+            for (edge f : exits[i]->preds)
+                bitmap_set_bit (reachable, f->src->index);
             bitmap_and (expr, expr, reachable);
         }
     }
