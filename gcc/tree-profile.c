@@ -169,6 +169,7 @@ void print(edge e) {
 
 static int
 index_of (const_basic_block needle, const const_basic_block* blocks, int size)
+noexcept (true)
 {
     for (int i = 0; i < size; i++) {
         if (blocks[i] == needle)
@@ -179,6 +180,7 @@ index_of (const_basic_block needle, const const_basic_block* blocks, int size)
 
 static bool
 index_lt (const basic_block x, const basic_block y)
+noexcept (true)
 {
     return x->index < y->index;
 }
@@ -197,6 +199,7 @@ find_masked_conditions (
     const unsigned* flag,
     basic_block *out,
     int maxsize)
+noexcept (true)
 {
     int n = 0;
     for (edge e : block->preds) {
