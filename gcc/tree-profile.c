@@ -513,7 +513,7 @@ find_first_expr (mcdc_ctx& ctx, basic_block pre, basic_block post)
 
     const int nblocks = find_expr_limits
         (pre, blocks, ctx.maxelems, post, expr);
-    if (nblocks < 2)
+    if (nblocks == 1)
         return nblocks;
 
     /* record all nodes immediately outside */
