@@ -77,6 +77,41 @@ static GTY(()) tree ic_tuple_var;
 static GTY(()) tree ic_tuple_counters_field;
 static GTY(()) tree ic_tuple_callee_field;
 
+void print(const basic_block* blocks, int size, const char* s = "") {
+    return;
+    printf("%s [ ", s);
+    for (int i = 0; i < size; i++)
+        printf("%d ", blocks[i]->index);
+    printf("]\n");
+}
+
+void print(basic_block entry, basic_block exit) {
+    return;
+    puts(current_function_name());
+    basic_block bb;
+    FOR_BB_BETWEEN(bb, entry, exit, next_bb)
+    {
+        edge e; edge_iterator ei;
+        FOR_EACH_EDGE(e, ei, bb->succs) {
+            printf("A%d -> A%d\n", e->src->index, e->dest->index);
+        }
+    }
+}
+
+void print(edge e) {
+    return;
+    printf ("==== EDGE %d -> %d ====\n", e->src->index, e->dest->index);
+    gimple_stmt_iterator i;
+    for (i = gsi_start (e->insns.g); !gsi_end_p (i); gsi_next (&i))
+    {
+        gimple* gs = gsi_stmt(i);
+        print_gimple_stmt (stdout, gs, 0, TDF_SLIM);
+    }
+
+    printf ("====             ====\n");
+}
+
+
 namespace {
 
 struct varcache {
@@ -129,43 +164,7 @@ struct mcdc_ctx {
     }
 };
 
-}
-
 #define CONDITIONS_MAX_TERMS 64
-
-void print(const basic_block* blocks, int size, const char* s = "") {
-    return;
-    printf("%s [ ", s);
-    for (int i = 0; i < size; i++)
-        printf("%d ", blocks[i]->index);
-    printf("]\n");
-}
-
-void print(basic_block entry, basic_block exit) {
-    return;
-    puts(current_function_name());
-    basic_block bb;
-    FOR_BB_BETWEEN(bb, entry, exit, next_bb)
-    {
-        edge e; edge_iterator ei;
-        FOR_EACH_EDGE(e, ei, bb->succs) {
-            printf("A%d -> A%d\n", e->src->index, e->dest->index);
-        }
-    }
-}
-
-void print(edge e) {
-    return;
-    printf ("==== EDGE %d -> %d ====\n", e->src->index, e->dest->index);
-    gimple_stmt_iterator i;
-    for (i = gsi_start (e->insns.g); !gsi_end_p (i); gsi_next (&i))
-    {
-        gimple* gs = gsi_stmt(i);
-        print_gimple_stmt (stdout, gs, 0, TDF_SLIM);
-    }
-
-    printf ("====             ====\n");
-}
 
 static int
 index_of (const_basic_block needle, const const_basic_block* blocks, int size)
@@ -546,6 +545,27 @@ find_first_expr (mcdc_ctx& ctx, basic_block pre, basic_block post)
     return k;
 }
 
+static void
+emit_bitexpr (edge e, tree lhs, tree op1, tree_code op, tree op2)
+{
+    tree tmp;
+    gassign *read;
+    gassign *bitw;
+    gassign *write;
+    /*
+     * insert lhs = op1 <bit-op> op2, e.g. lhs = op1 | op2
+     */
+    tmp   = make_temp_ssa_name  (gcov_type_node, NULL, "__mcdc_tmp");
+    read  = gimple_build_assign (tmp, op1);
+    tmp   = make_temp_ssa_name  (gcov_type_node, NULL, "__mcdc_tmp");
+    bitw  = gimple_build_assign (tmp, op, gimple_assign_lhs (read), op2);
+    write = gimple_build_assign (lhs, gimple_assign_lhs (bitw));
+
+    gsi_insert_on_edge (e, read);
+    gsi_insert_on_edge (e, bitw);
+    gsi_insert_on_edge (e, write);
+}
+
 /*
  * This is a (slightly) modified version of the algorithm in Whalen, Heimdahl,
  * De Silva "Efficient Test Coverage Measurement for MC/DC". Their algorithm
@@ -628,6 +648,8 @@ find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
     }
 }
 
+}
+
 int
 find_condition_blocks (
     basic_block entry,
@@ -655,27 +677,6 @@ find_condition_blocks (
         sizes[i + 1] += sizes[i];
 
     return ctx.exprs;
-}
-
-static void
-emit_bitexpr (edge e, tree lhs, tree op1, tree_code op, tree op2)
-{
-    tree tmp;
-    gassign *read;
-    gassign *bitw;
-    gassign *write;
-    /*
-     * insert lhs = op1 <bit-op> op2, e.g. lhs = op1 | op2
-     */
-    tmp   = make_temp_ssa_name  (gcov_type_node, NULL, "__mcdc_tmp");
-    read  = gimple_build_assign (tmp, op1);
-    tmp   = make_temp_ssa_name  (gcov_type_node, NULL, "__mcdc_tmp");
-    bitw  = gimple_build_assign (tmp, op, gimple_assign_lhs (read), op2);
-    write = gimple_build_assign (lhs, gimple_assign_lhs (bitw));
-
-    gsi_insert_on_edge (e, read);
-    gsi_insert_on_edge (e, bitw);
-    gsi_insert_on_edge (e, write);
 }
 
 int instrument_decision (basic_block *blocks, int nblocks, int idx_decision)
