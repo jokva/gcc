@@ -79,6 +79,13 @@ static GTY(()) tree ic_tuple_callee_field;
 
 namespace {
 
+struct varcache {
+    auto_sbitmap expr;
+    auto_sbitmap reachable;
+
+    explicit varcache (unsigned size) : expr (size), reachable (size) {}
+};
+
 struct mcdc_ctx {
     /* output arrays */
     basic_block *blocks;
@@ -102,8 +109,9 @@ struct mcdc_ctx {
      * loop edges from being taken again
      */
     auto_sbitmap seen;
+    varcache cache;
 
-    explicit mcdc_ctx (unsigned size) : maxelems (0), exprs (0), seen (size)
+    explicit mcdc_ctx (unsigned size) : maxelems (0), exprs (0), seen (size), cache (size)
     {
         bitmap_clear (seen);
     }
@@ -485,16 +493,15 @@ dfsup1 (sbitmap reachable, basic_block pre, basic_block post, basic_block* stack
 }
 
 static int
-find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int maxsize)
+find_first_expr (mcdc_ctx& ctx, basic_block pre, basic_block post)
 {
-    if (!is_conditional_p (pre))
-        return 0;
-
-    const int nmax = n_basic_blocks_for_fn (cfun);
-    auto_sbitmap expr (nmax);
-    auto_sbitmap reachable (nmax);
+    sbitmap expr = ctx.cache.expr;
+    sbitmap reachable = ctx.cache.reachable;
     bitmap_clear (expr);
     bitmap_clear (reachable);
+
+    basic_block* blocks = ctx.blocks;
+    const int maxsize = ctx.maxelems;
 
     struct loop* loop = pre->loop_father;
     const bool dowhile = !loop_exits_from_bb_p (loop, pre);
@@ -585,14 +592,13 @@ find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
             break;
 
         post = get_immediate_dominator (CDI_POST_DOMINATORS, pre);
-        int nblocks = find_first_expr (pre, post, ctx.blocks, ctx.maxelems);
-
-        if (!nblocks) {
+        if (!is_conditional_p (pre)) {
             for (edge e : pre->succs)
                 find_conditions_between (ctx, e->dest, post);
             continue;
         }
 
+        int nblocks = find_first_expr (ctx, pre, post);
         /*
          * Found an expression, but the blocks (and by extension, terms)
          * might be in the wrong order depending on how the CFG was
