@@ -715,22 +715,6 @@ int instrument_decision (basic_block *blocks, int nblocks, int idx_decision)
     for (int iblock = 0; iblock < nblocks - 2; iblock++)
     {
         basic_block block = blocks[iblock];
-        // not part of expr, should not be here
-        // means find-expr brings more nodes than it should
-        // <- MONDAY: this is the symptom
-        if (!is_conditional_p (block)) {
-            location_t loc = gimple_location (gsi_stmt (gsi_last_bb (block)));
-            basic_block e1 = ENTRY_BLOCK_PTR_FOR_FN (cfun)->next_bb;
-            basic_block e2 = EXIT_BLOCK_PTR_FOR_FN (cfun);
-            print (e1, e2);
-            print (blocks, nblocks, "blocks: ");
-            error_at (loc, "block (index = %d) not conditional; should not be included", block->index);
-            continue;
-        }
-
-        //if (single_succ_p (block))
-        //    continue;
-
         for (int k = 0; k < 2; k++)
         {
             edge e = EDGE_SUCC (block, k);
