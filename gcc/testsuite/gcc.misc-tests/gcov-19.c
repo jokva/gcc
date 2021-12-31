@@ -487,6 +487,8 @@ void mcdc018b (int a, int b, int c) {
 /* too many conditions, so coverage gives up */
 void mcdc019a () {
     int conds[65] = { 0 };
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wcoverage-too-many-conditions"
     x = conds[ 0] || conds[ 1] || conds[ 2] || conds[ 3] || conds[ 4] ||
         conds[ 5] || conds[ 6] || conds[ 7] || conds[ 8] || conds[ 9] ||
         conds[10] || conds[11] || conds[12] || conds[13] || conds[14] ||
@@ -501,6 +503,7 @@ void mcdc019a () {
         conds[55] || conds[56] || conds[57] || conds[58] || conds[59] ||
         conds[60] || conds[61] || conds[62] || conds[63] || conds[64]
     ;
+    #pragma GCC diagnostic pop
 }
 
 

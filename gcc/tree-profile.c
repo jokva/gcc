@@ -611,7 +611,9 @@ find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
             ctx.commit (pre, nblocks);
         } else {
             location_t loc = gimple_location (gsi_stmt (gsi_last_bb (pre)));
-            warning_at (loc, 0, "Too many conditions (found %d); giving up coverage", nblocks);
+            warning_at
+                (loc, OPT_Wcoverage_too_many_conditions,
+                 "Too many conditions (found %d); giving up coverage", nblocks);
         }
 
         for (edge e : last->succs)

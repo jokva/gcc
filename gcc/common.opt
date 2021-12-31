@@ -849,6 +849,10 @@ Wcoverage-invalid-line-number
 Common Var(warn_coverage_invalid_linenum) Init(1) Warning
 Warn in case a function ends earlier than it begins due to an invalid linenum macros.
 
+Wcoverage-too-many-conditions
+Common Var(warn_too_many_conditions) Init(1) Warning
+Warn when condition gives up because of too many terms.
+
 Wmissing-profile
 Common Var(warn_missing_profile) Init(1) Warning
 Warn in case profiles in -fprofile-use do not exist.
