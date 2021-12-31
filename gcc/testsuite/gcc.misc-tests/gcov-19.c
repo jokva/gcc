@@ -97,9 +97,10 @@ void mcdc004c (int a)
 }
 
 void mcdc004d (int a, int b, int c) {
-    if (a) /* conditions(2/2) */
-    if (b || c) /* conditions(1/4) true(1) false(0 1) */
-        x = a + b + c;
+    if (a) { /* conditions(2/2) */
+        if (b || c) /* conditions(1/4) true(1) false(0 1) */
+            x = a + b + c;
+    }
 }
 
 /* mixing && and || works */
@@ -433,7 +434,7 @@ void mcdc017c (int a, int b)
 int id  (int x) { return  x; }
 int inv (int x) { return !x; }
 
-/* collection of odd cases lifted-and-adapted from real-world cases */
+/* collection of odd cases lifted-and-adapted from real-world code */
 int mcdc018a (int a, int b, int c, int d, int e, int f, int g, int len)
 {
     int n;
