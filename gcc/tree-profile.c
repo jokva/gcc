@@ -166,7 +166,7 @@ struct mcdc_ctx {
 
 #define CONDITIONS_MAX_TERMS 64
 
-static int
+int
 index_of (const_basic_block needle, const const_basic_block* blocks, int size)
 noexcept (true)
 {
@@ -177,7 +177,7 @@ noexcept (true)
     return -1;
 }
 
-static bool
+bool
 index_lt (const basic_block x, const basic_block y)
 noexcept (true)
 {
@@ -190,7 +190,7 @@ noexcept (true)
  * * For the first set of predecessors follows flag edges
  * * For all other ancestors follow !flag
  */
-static int
+int
 find_masked_conditions (
     basic_block block,
     const basic_block *expr,
@@ -303,7 +303,7 @@ noexcept (true)
  * the edge AB is false.
  */
 
-static void
+void
 mask_dontcare_subexprs (const basic_block* blocks, gcov_type_unsigned* masks, int nblocks)
 {
     const unsigned flags[] = {
@@ -340,7 +340,7 @@ mask_dontcare_subexprs (const basic_block* blocks, gcov_type_unsigned* masks, in
     }
 }
 
-static void
+void
 zero_accumulator_on_function_entry (tree accumulator, basic_block block)
 {
     edge e;
@@ -350,7 +350,7 @@ zero_accumulator_on_function_entry (tree accumulator, basic_block block)
         gsi_insert_on_edge (e, gimple_build_assign (accumulator, zero));
 }
 
-static bool
+bool
 is_conditional_p (const basic_block b)
 {
     if (single_succ_p (b))
@@ -365,7 +365,7 @@ is_conditional_p (const basic_block b)
     return t && f;
 }
 
-static int
+int
 find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block post, sbitmap expr)
 {
     gcc_assert (maxsize > 0);
@@ -410,7 +410,7 @@ find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block po
     return n;
 }
 
-static int
+int
 find_expr_halo (basic_block* blocks, int nblocks, sbitmap reachable)
 {
     int n = 0;
@@ -473,7 +473,7 @@ find_expr_halo (basic_block* blocks, int nblocks, sbitmap reachable)
  *   E ----> o // predecessor outside [B, e)
  */
 
-static void
+void
 dfsup1 (sbitmap reachable, basic_block pre, basic_block post, basic_block* stack)
 {
     stack[0] = pre;
@@ -494,7 +494,7 @@ dfsup1 (sbitmap reachable, basic_block pre, basic_block post, basic_block* stack
     }
 }
 
-static int
+int
 find_first_expr (mcdc_ctx& ctx, basic_block pre, basic_block post)
 {
     basic_block* blocks = ctx.blocks;
@@ -545,7 +545,7 @@ find_first_expr (mcdc_ctx& ctx, basic_block pre, basic_block post)
     return k;
 }
 
-static void
+void
 emit_bitexpr (edge e, tree lhs, tree op1, tree_code op, tree op2)
 {
     tree tmp;
@@ -601,7 +601,7 @@ emit_bitexpr (edge e, tree lhs, tree op1, tree_code op, tree op2)
  * TODO: describe output
  */
 
-static void
+void
 find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
 {
     basic_block pre;
