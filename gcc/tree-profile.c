@@ -498,16 +498,13 @@ dfsup1 (sbitmap reachable, basic_block pre, basic_block post, basic_block* stack
 static int
 find_first_expr (mcdc_ctx& ctx, basic_block pre, basic_block post)
 {
+    basic_block* blocks = ctx.blocks;
     sbitmap expr = ctx.cache.expr;
     sbitmap reachable = ctx.cache.reachable;
     bitmap_clear (expr);
     bitmap_clear (reachable);
 
-    basic_block* blocks = ctx.blocks;
-    const int maxsize = ctx.maxelems;
-
-    struct loop* loop = pre->loop_father;
-    const bool dowhile = !loop_exits_from_bb_p (loop, pre);
+    const bool dowhile = !loop_exits_from_bb_p (pre->loop_father, pre);
     const bool isloop = bb_loop_header_p (pre) && !dowhile;
 
     if (find_edge (pre, post) && !isloop) {
@@ -515,7 +512,8 @@ find_first_expr (mcdc_ctx& ctx, basic_block pre, basic_block post)
         return 1;
     }
 
-    const int nblocks = find_expr_limits (pre, blocks, maxsize, post, expr);
+    const int nblocks = find_expr_limits
+        (pre, blocks, ctx.maxelems, post, expr);
     if (nblocks < 2)
         return nblocks;
 
