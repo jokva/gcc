@@ -401,15 +401,16 @@ find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block po
 }
 
 static int
-find_expr_halo (basic_block* blocks, int nblocks)
+find_expr_halo (basic_block* blocks, int nblocks, sbitmap reachable)
 {
     int n = 0;
     basic_block* exits = blocks + nblocks;
     for (int i = 0; i < nblocks; i++) {
         for (edge e : blocks[i]->succs) {
-            if (index_of (e->dest, blocks, nblocks + n) != -1)
+            if (bitmap_bit_p (reachable, e->dest->index))
                 continue;
 
+            bitmap_set_bit (reachable, e->dest->index);
             exits[n++] = e->dest;
         }
     }
@@ -563,8 +564,10 @@ find_first_expr (basic_block pre, basic_block post, basic_block* blocks, int max
     if (nblocks < 2)
         return nblocks;
 
-    /* record all nodes immediately outside of */
-    const int nexits = find_expr_halo (blocks, nblocks);
+    /* record all nodes immediately outside */
+    // TODO: document CFG that makes this happen
+    bitmap_copy (reachable, expr);
+    const int nexits = find_expr_halo (blocks, nblocks, reachable);
     if (nexits == 2)
         return nblocks;
 
