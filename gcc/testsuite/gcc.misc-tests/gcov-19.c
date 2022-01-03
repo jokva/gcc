@@ -144,6 +144,20 @@ void mcdc006a (int a, int b, int c, int d, int e)
       }
 }
 
+void mcdc006b (int a, int b, int c)
+{
+    if (a) /* conditions(2/2) */
+    {
+        if (b) /*conditions(2/2) */
+        {
+            if (c) /* conditions(2/2) */
+            {
+                x = a + b + c;
+            }
+        }
+    }
+}
+
 /* else/if */
 void mcdc007a (int a, int b, int c, int d)
 {
@@ -217,7 +231,7 @@ void mcdc010a(int a, int b)
       }
 }
 
-int always (int) { return 1; }
+int always (int x) { (void)x; return 1; }
 
 /* no-condition infinite loops */
 void mcdc010b (int a)
@@ -258,7 +272,7 @@ void mcdc012a (int a, int b, int c) {
  * cannot ever satisfy MC/DC, even with all input combinations, because not all
  * variables independently affect the decision
  */
-void mcdc013a (int a, int /* b */, int c)
+void mcdc013a (int a, int b, int c)
 {
     /*
      * Specification: (a && b) || c
@@ -266,6 +280,7 @@ void mcdc013a (int a, int /* b */, int c)
      * But the expression was implemented wrong. This has branch coverage, but
      * 1not MC/DC
      */
+    (void)b;
     if ((a && !c) || c) /* conditions(5/6) false(1) */
                         /* conditions(end) */
         x = 1;
@@ -484,7 +499,7 @@ void mcdc018b (int a, int b, int c) {
     }
 }
 
-/* too many conditions, so coverage gives up */
+/* too many conditions, coverage gives up */
 void mcdc019a () {
     int conds[65] = { 0 };
     #pragma GCC diagnostic push
@@ -548,6 +563,11 @@ int main ()
   mcdc006a (0, 0, 0, 0, 0);
   mcdc006a (1, 0, 0, 0, 0);
   mcdc006a (1, 1, 1, 0, 0);
+
+  mcdc006b (0, 0, 0);
+  mcdc006b (1, 0, 0);
+  mcdc006b (1, 1, 0);
+  mcdc006b (1, 1, 1);
 
   mcdc007a (0, 0, 0, 0);
   mcdc007a (1, 0, 0, 0);

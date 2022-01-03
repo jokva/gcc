@@ -116,8 +116,8 @@ static void find_spanning_tree (struct edge_list *);
    F is the first insn of the chain.
    NUM_BLOCKS is the number of basic blocks found in F.  */
 
-int find_condition_blocks (basic_block, basic_block, basic_block*, int*, int);
-int instrument_decision (basic_block*, int, int);
+int find_conditions (basic_block, basic_block, basic_block*, int*, int);
+int instrument_decisions (basic_block*, int, int);
 
 static unsigned
 instrument_edges (struct edge_list *el)
@@ -1323,7 +1323,7 @@ branch_prob (void)
     int *sizes = XNEWVEC (int, max_blocks);
     basic_block *blocks = XNEWVEC (basic_block, max_blocks);
 
-    int nconds = find_condition_blocks
+    int nconds = find_conditions
         (entry, exit, blocks, sizes, max_blocks);
     total_num_mcdc += nconds;
 
@@ -1334,7 +1334,7 @@ branch_prob (void)
       {
         int idx = sizes[i];
         int len = sizes[i + 1] - idx;
-        int terms = instrument_decision (blocks + idx, len, i);
+        int terms = instrument_decisions (blocks + idx, len, i);
         if (terms > 0)
         {
           gcov_write_unsigned (blocks[idx]->index);

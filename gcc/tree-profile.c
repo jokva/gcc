@@ -120,8 +120,11 @@ struct mcdc_ctx {
     basic_block *blocks;
     int *sizes;
 
-    /* the size of the blocks buffer */
-    int maxelems;
+    /* The size of the blocks buffer. This is just bug protection,
+     * the caller should have allocated enough memory for blocks to never get
+     * this many elements.
+     */
+    int maxsize;
 
     /*
      * number of expressions found; how many counters must be allocated.
@@ -140,7 +143,7 @@ struct mcdc_ctx {
     auto_sbitmap seen;
     varcache cache;
 
-    explicit mcdc_ctx (unsigned size) : maxelems (0), exprs (0), seen (size), cache (size)
+    explicit mcdc_ctx (unsigned size) : maxsize (0), exprs (0), seen (size), cache (size)
     {
         bitmap_clear (seen);
     }
@@ -148,7 +151,7 @@ struct mcdc_ctx {
     void commit (basic_block top, int nblocks) {
         blocks   += nblocks;
         *sizes   += nblocks;
-        maxelems -= nblocks;
+        maxsize -= nblocks;
 
         exprs++;
         sizes++;
@@ -161,7 +164,7 @@ struct mcdc_ctx {
 #define CONDITIONS_MAX_TERMS 64
 
 int
-index_of (const_basic_block needle, const const_basic_block* blocks, int size)
+index_of (const_basic_block needle, const const_basic_block *blocks, int size)
 {
     for (int i = 0; i < size; i++) {
         if (blocks[i] == needle)
@@ -177,170 +180,115 @@ index_lt (const basic_block x, const basic_block y)
 }
 
 /*
- * Find masked conditions. This is a search up the CFG that:
+ * Special case of the single_*_p and single_*_edge functions in basic-block.h
+ * that doesn't consider exception handling or other complex edges. This helps
+ * create a view of the CFG with only normal edges - if a basic block has both
+ * an outgoing fallthrough and exceptional edge [1], it should be considered a
+ * single-successor.
  *
- * * For the first set of predecessors follows flag edges
- * * For all other ancestors follow !flag
+ * [1] if this is not possible, these functions can be removed and replaced by
+ *     their basic-block.h cousins.
  */
-int
-find_masked_conditions (
-    basic_block block,
-    const basic_block *expr,
-    int nexpr,
-    const unsigned* flag,
-    basic_block *out,
-    int maxsize)
+bool
+single (vec<edge, va_gc> *edges)
 {
-    edge e;
-    edge_iterator ei;
-    int n = 0;
-    FOR_EACH_EDGE (e, ei, block->preds) {
-        /*
-         * Skip any predecessor not in the expression - there might be such an
-         * edge to the enclosing expression or in the presence of loops, but
-         * masking cannot happen outside the expression itself.
-         *
-         * Expressions should generally be small enough that linear search is
-         * fast, but this could just as well be a bitmap.
-         */
-        if (index_of (e->src, expr, nexpr) == -1)
+    int n = EDGE_COUNT (edges);
+    if (n == 0)
+        return false;
+
+    edge e; edge_iterator ei;
+    FOR_EACH_EDGE (e, ei, edges) {
+        if (e->flags & EDGE_COMPLEX)
+            n -= 1;
+    }
+
+    return n == 1;
+}
+
+edge
+single_edge (vec<edge, va_gc> *edges)
+{
+    edge e; edge_iterator ei;
+    FOR_EACH_EDGE (e, ei, edges) {
+        if (e->flags & EDGE_COMPLEX)
             continue;
-
-        if (e->flags & flag[0])
-            out[n++] = e->src;
+        return e;
     }
-
-    /*
-     * This function conceptually outputs a set, but one value is special - the
-     * source of the edge that triggers the masking.
-     */
-    if (n > 1) {
-        basic_block *top = std::max_element (out, out + n, index_lt);
-        std::swap (*top, *out);
-    }
-
-    for (int pos = 0; pos < n; pos++) {
-        block = out[pos];
-        FOR_EACH_EDGE (e, ei, block->preds)
-        {
-            /*
-             * Stop on previously-seen node, since all its predecessor have
-             * been added already. Maintaining it as a set also keeps the size
-             * of the output bound by the size of the expression.
-             */
-            if (index_of (e->src, out, n) != -1)
-                continue;
-
-            if (index_of (e->src, expr, nexpr) == -1)
-                continue;
-
-            if (e->flags & flag[1])
-                out[n++] = e->src;
-
-            gcc_assert (n < maxsize);
-        }
-    }
-
-    return n;
+    gcc_assert (false);
 }
 
 /*
- * Walk the blocks formed by the expression(s) and look for conditions that
- * would mask other conditions.
+ * Sometimes, for example with function calls and C++ destructors the CFG gets
+ * extra nodes that are essentially single-entry-single-exit in the middle of
+ * boolean expressions. For example:
  *
- * Consider A || B. If B is true then A will does not independently affect the
- * decision. In a way, this is "reverse" short circuiting, and always work on
- * the right-hand side of expressions. A || B interpreted as binary decision
- * diagram becomes:
+ *    x || can_throw (y)
  *
- * A
- *t|\f
- * | \
- * |  B
- * |t/ \f
- * |/   \
- * T     F
+ *             A
+ *            /|
+ *           / |
+ *          B  |
+ *          |  |
+ *          C  |
+ *         / \ |
+ *        /   \|
+ *       F     T
  *
- * The algorithm looks for "closed paths" like the one between ATB. Masking
- * right-hand sides happen when a block has a pair of incoming edges of the
- * same boolean value, and there is an edge connecting the two predecessors
- * with the *opposite* boolean value. In this particular example:
+ * Without the extra node inserted by the function + exception it becomes a
+ * proper 2-term graph, not 2 single-term graphs.
  *
- * A(t) -> T
- * A(f) -> B
- * B(t) -> T
+ *             A
+ *            /|
+ *           C |
+ *          / \|
+ *         F   T
  *
- * Notice that the masking block is B, and the masked block is A. It gets
- * slightly more complicated, since masking can affect "outside" its own
- * subexpression. For example, A || (B && C). If C is false, B is masked.
- * However, if B && C is true, A gets masked. B && C can be determined from C,
- * since !B would terminate and not evaluate C, so a true C would mask A.
+ * contract_edge ignores the series of intermediate nodes and makes a virtual
+ * edge A -> C, without having to construct a new simplified CFG explicitly.
  *
- * A
- *t|\f
- * | \
- * |  \
- * |   \
- * |    B
- * |  t/ \f
- * |  C   |
- * |t/ \f |
- * |/   \ |
- * T     F
- *
- * Notice how BFC forms a "closed path" on a decision false. Previous
- * subexpressions are masked by walking the tree upwards until:
- *  + there are no edges with the same truth value
- *  + it reaches the root
- * In this particular example, C would mask B (directly), and mask A because
- * the edge AB is false.
+ * Such an expression cannot correctly be repreted as two 1-term expressions,
+ * as it would break the condition masking.
  */
-
-void
-mask_dontcare_subexprs (const basic_block* blocks, gcov_type_unsigned* masks, int nblocks)
+edge
+contract_edge (edge e, sbitmap expr)
 {
-    const unsigned flags[] = {
-        EDGE_TRUE_VALUE,
-        EDGE_FALSE_VALUE,
-        EDGE_TRUE_VALUE,
-    };
+    while (true) {
+        basic_block src  = e->src;
+        basic_block dest = e->dest;
 
-    memset (masks, 0, sizeof (*masks) * nblocks * 2);
-    basic_block eblocks[CONDITIONS_MAX_TERMS];
-    for (int i = 0; i < nblocks; i++)
-    {
-        basic_block block = blocks[i];
+        if (!single (dest->succs))
+            return e;
+        if (!single (dest->preds))
+            return e;
+        if (!single (src->preds))
+            return e;
 
-        if (single_pred_p (block))
-            continue;
+        edge succe = single_edge (dest->succs);
+        if (!single (succe->dest->preds))
+            return e;
 
-        for (int k = 0; k < 2; k++)
-        {
-            const int n = find_masked_conditions
-                (block, blocks, nblocks, flags + k, eblocks, CONDITIONS_MAX_TERMS);
-
-            if (n < 2)
-                continue;
-
-            const int idst = index_of (eblocks[0], blocks, nblocks);
-            gcc_assert (idst != -1);
-
-            for (int i = 1; i < n; i++) {
-                const int pos = index_of (eblocks[i], blocks, nblocks);
-                masks[2*idst + k] |= gcov_type_unsigned (1) << pos;
-            }
-        }
+        bitmap_set_bit (expr, dest->index);
+        e = succe;
     }
 }
 
-void
-zero_accumulator_on_function_entry (tree accumulator, basic_block block)
+edge
+contract_edge_up (edge e, sbitmap expr)
 {
-    edge e;
-    edge_iterator ei;
-    tree zero = build_int_cst (gcov_type_node, 0);
-    FOR_EACH_EDGE (e, ei, block->succs)
-        gsi_insert_on_edge (e, gimple_build_assign (accumulator, zero));
+    while (true) {
+        basic_block src  = e->src;
+        basic_block dest = e->dest;
+
+        if (!single (dest->succs))
+            return e;
+        if (!single (dest->preds))
+            return e;
+        if (!single (src->preds))
+            return e;
+
+        if (expr) bitmap_set_bit (expr, src->index);
+        e = single_pred_edge (src);
+    }
 }
 
 bool
@@ -360,8 +308,159 @@ is_conditional_p (const basic_block b)
     return t && f;
 }
 
+/*
+ * The first block in the output will always be the source block of the edge
+ * that will apply the masking operation - the rest of the blocks are
+ * effectively unordered.
+ */
 int
-find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block post, sbitmap expr)
+find_conditions_masked_by (
+    basic_block block,
+    const sbitmap expr,
+    const unsigned* flag,
+    basic_block *out,
+    int maxsize)
+{
+    edge e;
+    edge_iterator ei;
+    int n = 0;
+    FOR_EACH_EDGE (e, ei, block->preds) {
+        /*
+         * Skip any predecessor not in the expression - there might be such an
+         * edge to the enclosing expression or in the presence of loops, but
+         * masking cannot happen outside the expression itself.
+         */
+        if (!bitmap_bit_p (expr, e->src->index))
+            continue;
+
+        e = contract_edge_up (e, NULL);
+        if (e->flags & flag[0])
+            out[n++] = e->src;
+    }
+
+    if (n > 1) {
+        basic_block *top = std::max_element (out, out + n, index_lt);
+        std::swap (*top, *out);
+    }
+
+    for (int pos = 0; pos < n; pos++) {
+        FOR_EACH_EDGE (e, ei, out[pos]->preds) {
+            if (!bitmap_bit_p (expr, e->src->index))
+                continue;
+            if (index_of (e->src, out, n) != -1)
+                continue;
+
+            e = contract_edge_up (e, NULL);
+            if (e->flags & flag[1])
+                out[n++] = e->src;
+
+            gcc_assert (n < maxsize);
+        }
+    }
+
+    return n;
+}
+
+/*
+ * Scan the blocks that make up an expression and look for conditions that
+ * would mask other conditions. For a deeper discussion on masking, see Whalen,
+ * Heimdahl, De Silva "Efficient Test Coverage Measurement for MC/DC". Masking
+ * is best illustrated with an example:
+ *
+ * A || B. If B is true then A will does not independently affect the decision.
+ * In a way, this is "reverse" short circuiting, and always work on the
+ * right-hand side of expressions. * || true is always true and * && false is
+ * always false - the left-hand-side does not affect the outcome, and their
+ * values should not contribute to modifidied condition/decision coverage.
+ *
+ * A || B interpreted as a decision diagram becomes:
+ *
+ * A
+ *t|\f
+ * | \
+ * |  B
+ * |t/ \f
+ * |/   \
+ * T     F
+ *
+ * The algorithm looks for triangles like ATB. Masking right-hand sides happen
+ * when a block has a pair of incoming edges of the same boolean value, and
+ * there is an edge connecting the two predecessors with the *opposite* boolean
+ * value. The masking block is B, and the masked block is A. In this
+ * particular example:
+ *
+ * Masking can affect "outside" its own subexpression; in A || (B && C) if C is
+ * false, B is masked. However, if (B && C) is true, A gets masked. B && C can
+ * be determined from evaluating C since !B would short-circuit, so a true C
+ * would mask A.
+ *
+ * A
+ *t|\f
+ * | \
+ * |  \
+ * |   \
+ * |    B
+ * |  t/ \f
+ * |  C   |
+ * |t/ \f |
+ * |/   \ |
+ * T     F
+ *
+ * Notice how BFC forms a triangle. Expressions masked by an edge are
+ * determined:
+ * * Go to the predecessor with truth value b (if it exists).
+ * * Follow the path of ancestors with taking only !b edges, recording every
+ *   node from here on.
+ *
+ * For the case where C can mask A, the path goes C [true]-> B -> [false] A, so
+ * C [true] masks A.
+ */
+void
+mask_dontcare_subexprs (const basic_block *blocks, gcov_type_unsigned *masks, int nblocks)
+{
+    const unsigned flags[] = {
+        EDGE_TRUE_VALUE,
+        EDGE_FALSE_VALUE,
+        EDGE_TRUE_VALUE,
+    };
+
+    memset (masks, 0, sizeof (*masks) * nblocks * 2);
+    basic_block eblocks[CONDITIONS_MAX_TERMS];
+    auto_sbitmap expr (n_basic_blocks_for_fn (cfun));
+    bitmap_clear (expr);
+    for (int i = 0; i < nblocks; i++)
+        bitmap_set_bit (expr, blocks[i]->index);
+
+    for (int i = 0; i < nblocks; i++)
+    {
+        basic_block block = blocks[i];
+        if (single_pred_p (block))
+            continue;
+
+        for (int k = 0; k < 2; k++)
+        {
+            const int n = find_conditions_masked_by
+                (block, expr, flags + k, eblocks, CONDITIONS_MAX_TERMS);
+
+            if (n < 2)
+                continue;
+
+            const int idx = 2*index_of (eblocks[0], blocks, nblocks) + k;
+            for (int i = 1; i < n; i++) {
+                const int pos = index_of (eblocks[i], blocks, nblocks);
+                masks[idx] |= gcov_type_unsigned (1) << pos;
+            }
+        }
+    }
+}
+
+int
+collect_reachable_conditionals (
+    basic_block pre,
+    basic_block post,
+    basic_block *out,
+    int maxsize,
+    sbitmap expr)
 {
     gcc_assert (maxsize > 0);
 
@@ -377,23 +476,15 @@ find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block po
         basic_block block = out[pos];
 
         FOR_EACH_EDGE (e, ei, block->succs) {
-            basic_block dest = e->dest;
-
-            /* don't consider exceptions and abnormal exits */
-            /* TODO: macro/function */
-            if (!(e->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE)))
-                continue;
+            basic_block dest = contract_edge (e, expr)->dest;
 
             /* Skip loop edges, as they go outside the expression */
             if (dest == loop)
                 continue;
-
             if (dest == post)
                 continue;
-
             if (!is_conditional_p (dest))
                 continue;
-
             /* already-seen, don't re-add */
             if (bitmap_bit_p (expr, dest->index))
                 continue;
@@ -409,12 +500,12 @@ find_expr_limits (basic_block pre, basic_block* out, int maxsize, basic_block po
 }
 
 int
-find_expr_halo (basic_block* blocks, int nblocks, sbitmap reachable)
+collect_neighbors (basic_block *blocks, int nblocks, sbitmap reachable)
 {
     edge e;
     edge_iterator ei;
     int n = 0;
-    basic_block* exits = blocks + nblocks;
+    basic_block *exits = blocks + nblocks;
     for (int i = 0; i < nblocks; i++) {
         FOR_EACH_EDGE (e, ei, blocks[i]->succs) {
             if (bitmap_bit_p (reachable, e->dest->index))
@@ -473,8 +564,13 @@ find_expr_halo (basic_block* blocks, int nblocks, sbitmap reachable)
  *   E ----> o // predecessor outside [B, e)
  */
 
+/*
+ * Do a (upwards) search for reachable nodes and mark them in the reachable
+ * set, making sure not to take loop edges. dfs_enumerate_from () won't work as
+ * the filter function needs information from the edge.
+ */
 void
-dfsup1 (sbitmap reachable, basic_block pre, basic_block post, basic_block* stack)
+mark_reachable (sbitmap reachable, basic_block pre, basic_block post, basic_block *stack)
 {
     edge e;
     edge_iterator ei;
@@ -491,44 +587,46 @@ dfsup1 (sbitmap reachable, basic_block pre, basic_block post, basic_block* stack
             if (dominated_by_p (CDI_DOMINATORS, e->src, e->dest))
                 continue;
 
-            bitmap_set_bit (reachable, e->src->index);
-            stack[n++] = e->src;
+            basic_block src = contract_edge_up (e, reachable)->src;
+            bitmap_set_bit (reachable, src->index);
+            stack[n++] = src;
         }
     }
 }
 
 int
-find_first_expr (mcdc_ctx& ctx, basic_block pre, basic_block post)
+find_first_conditional (mcdc_ctx &ctx, basic_block pre, basic_block post)
 {
-    basic_block* blocks = ctx.blocks;
+    basic_block *blocks = ctx.blocks;
     sbitmap expr = ctx.cache.expr;
     sbitmap reachable = ctx.cache.reachable;
     bitmap_clear (expr);
     bitmap_clear (reachable);
+    blocks[0] = pre;
     edge e;
     edge_iterator ei;
 
+    /*
+     * If there is a direct edge to the post dominator then this cannot only be
+     * a single-term conditional *unless* it is a loop (in which case the
+     * to-post edge is the loop exit edge).
+     */
     const bool dowhile = !loop_exits_from_bb_p (pre->loop_father, pre);
     const bool isloop = bb_loop_header_p (pre) && !dowhile;
-
-    if (find_edge (pre, post) && !isloop) {
-        blocks[0] = pre;
+    if (find_edge (pre, post) && !isloop)
         return 1;
-    }
 
-    const int nblocks = find_expr_limits
-        (pre, blocks, ctx.maxelems, post, expr);
+    const int nblocks = collect_reachable_conditionals
+        (pre, post, blocks, ctx.maxsize, expr);
     if (nblocks == 1)
         return nblocks;
 
-    /* record all nodes immediately outside */
-    // TODO: document CFG that makes this happen
     bitmap_copy (reachable, expr);
-    const int nexits = find_expr_halo (blocks, nblocks, reachable);
+    const int nexits = collect_neighbors (blocks, nblocks, reachable);
     if (nexits == 2)
         return nblocks;
 
-    /* then, dfs + intersect from there */
+    /* Find reachable nodes from the neighbors */
     basic_block *exits = blocks + nblocks;
     for (int i = 0; i < nexits; i++) {
         FOR_EACH_EDGE (e, ei, exits[i]->preds) {
@@ -536,7 +634,7 @@ find_first_expr (mcdc_ctx& ctx, basic_block pre, basic_block post)
                 continue;
 
             bitmap_clear (reachable);
-            dfsup1 (reachable, e->src, pre, exits + nexits);
+            mark_reachable (reachable, e->src, pre, exits + nexits);
             edge f; edge_iterator ef;
             FOR_EACH_EDGE (f, ef, exits[i]->preds)
                 bitmap_set_bit (reachable, f->src->index);
@@ -573,42 +671,34 @@ emit_bitexpr (edge e, tree lhs, tree op1, tree_code op, tree op2)
 }
 
 /*
- * This is a (slightly) modified version of the algorithm in Whalen, Heimdahl,
- * De Silva "Efficient Test Coverage Measurement for MC/DC". Their algorithm
- * work on ASTs, but the instrumentation work on control flow graphs.
+ * Walk the CFG and collect conditionals.
  *
- * The instrumentation relies heavily on all decision with the same boolean
- * value have the same *index* in the successor vector. If this is not the
- * case, some other method must be used to determine which successor correspond
- * to which boolean value.
+ * 1. Collect all nodes reachable from the root node through (contracted) paths
+ *    of true/false edges.
+ * 2. Collect the neighbors of the reachable node (set).
+ * 3. From every node in the neighborhood, walk the up the CFG and mark every
+ *    reachable node. Only the nodes reachable from *every* node in the
+ *    neighborhood are a part of the first expression.
+ * 4. Record the expression plus the two successors of the last (highest-index)
+ *    node in the expression, i.e. the last term.
+ * 5. Repeat using the two successors as new root nodes.
  *
- * The algorithm does not consider the symbol of a condition, only its
- * position, which means !A || (!B && A) is considered 3-term conditional.
+ * It is not guaranteed to find nodes in the order of the expression, i.e. it
+ * might find (a || b) && c as [a c b], so the output is sorted by
+ * basic_block->index.
  *
- * The algorithm work recognises three main graph shapes:
- * * The loop
- * * Nested expressions
- * * Conditionals
+ * Steps 2 and 3 are necessary to distinguish chained conditionals from
+ * multi-term conditionals, e.g. to separate
  *
- * For all cases the high-level approach is similar: find the post dominator to
- * the entry node, and do a depth-first search for the dominator. The entry
- * and exit might be a subgraph of the function.
- *
- * If the dominator is a loop, find all nodes in the expression *before* the
- * loop entry, which makes up the the loop condition. Then, recursively process
- * the loop body, before continuing from the dominator.
- *
- * Otherwise, isolate the boolean expression by searching from the post
- * dominator feeding the result into set intersections. The only blocks
- * remaining are the ones in common in all paths, which are the blocks that
- * make up the first decision. If there are sub expressions (with decisions)
- * left, the function is called recursively to sort them out.
- *
- * TODO: describe output
+ *     if (a) {
+ *         if (b)
+ *             work ();
+ *     }
+ *     if (a && b)
+ *         work ();
  */
-
 void
-find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
+collect_conditions (mcdc_ctx& ctx, basic_block entry, basic_block exit)
 {
     edge e;
     edge_iterator ei;
@@ -624,41 +714,92 @@ find_conditions_between (mcdc_ctx& ctx, basic_block entry, basic_block exit)
         post = get_immediate_dominator (CDI_POST_DOMINATORS, pre);
         if (!is_conditional_p (pre)) {
             FOR_EACH_EDGE (e, ei, pre->succs)
-                find_conditions_between (ctx, e->dest, post);
+                collect_conditions (ctx, e->dest, post);
             continue;
         }
 
-        int nblocks = find_first_expr (ctx, pre, post);
-        /*
-         * Found an expression, but the blocks (and by extension, terms)
-         * might be in the wrong order depending on how the CFG was
-         * traversed. Fix this by sorting by block index, i.e. assume that
-         * the lower-index'd block is to the left in the boolean
-         * expression.
-         */
-        std::sort (ctx.blocks, ctx.blocks + nblocks, index_lt);
-        basic_block last = ctx.blocks[nblocks - 1];
-        if (nblocks <= CONDITIONS_MAX_TERMS) {
+        int nterms = find_first_conditional (ctx, pre, post);
+        std::sort (ctx.blocks, ctx.blocks + nterms, index_lt);
+        basic_block last = ctx.blocks[nterms - 1];
+        if (size_t(nterms) <= CONDITIONS_MAX_TERMS) {
+            /* Will any node have more than two exits? */
+            /* If it has complex edges too, filter them out */
             gcc_assert (EDGE_COUNT (last->succs) == 2);
             FOR_EACH_EDGE (e, ei, last->succs)
-                ctx.blocks[nblocks++] = e->dest;
-
-            ctx.commit (pre, nblocks);
+                ctx.blocks[nterms++] = e->dest;
+            ctx.commit (pre, nterms);
         } else {
             location_t loc = gimple_location (gsi_stmt (gsi_last_bb (pre)));
             warning_at
                 (loc, OPT_Wcoverage_too_many_conditions,
-                 "Too many conditions (found %d); giving up coverage", nblocks);
+                 "Too many conditions (found %d); giving up coverage", nterms);
         }
+
         FOR_EACH_EDGE (e, ei, last->succs)
-            find_conditions_between (ctx, e->dest, post);
+            collect_conditions (ctx, e->dest, post);
     }
 }
 
 }
 
+/*
+ * Condition coverage (MC/DC)
+ *
+ * Algorithm
+ * ---------
+ * This is a modified version of the algorithm in Whalen, Heimdahl, De Silva
+ * "Efficient Test Coverage Measurement for MC/DC". Their algorithm work on
+ * ASTs, but this algorithm work on control flow graphs. The individual phases
+ * are described in more detail closer to the implementation.
+ *
+ * The CFG is broken up into segments between dominators. This isn't strictly
+ * necessary, but since boolean expressions cannot cross dominators it makes
+ * for a nice way to reduce work.
+ *
+ * The coverage only considers the positions, not the symbols, in a
+ * conditional, e.g. !A || (!B && A) is a 3-term conditional even though A
+ * appears twice. Subexpressions have no effect on term ordering:
+ * (a && (b || (c && d)) || e) comes out as [a b c d e].
+ *
+ * The output for gcov is a vector of pairs of unsigned integers, interpreted
+ * as bitsets, where the bit index corresponds to the index of the condition in
+ * the expression.
+ *
+ * Implementation and interface
+ * ----------------------------
+ * Two public functions - find_conditions and instrument_decisions.
+ *
+ * find_conditions outputs two arrays, blocks and sizes. The sizes describes
+ * the ranges of blocks that make up every conditional, in a [first, last)
+ * fashion, i.e. begin = blocks[sizes[n]], end = blocks[sizes[n+1]] for
+ * expression n. The function returns the number of expressions.
+ *
+ * The coverage is designed to get most of its memory needs met by the caller,
+ * and heavily uses the end of the blocks array for buffer. This is both for
+ * performance (no resizes, amortized cost of allocation) and
+ * ease-of-implementation. This makes the caller responsible for allocating
+ * large enough arrays.
+ *
+ * blocks:
+ *  Every permanent conditions add 2 blocks (the true & false dest blocks), and
+ *  assuming a worst case of one-block-per-expr just storing the output needs
+ *  3*n_basic_blocks_for_fn (). Additionally, the searches might need to buffer
+ *  the full graph between entry and exit [1]. In total that means
+ *  5*n_basic_blocks_for_fn () should should be plenty, and the savings for
+ *  reducing this number is probably not worth the risk.
+ * sizes:
+ *  sizes gets one entry per expression plus initial, so
+ *  1+n_basic_blocks_for_fn () is sufficient.
+ *
+ * instrument_decisions uses the information provided by find_conditions to
+ * inject code onto edges in the CFG. Every instrumented function gets local
+ * accumulators zero'd on function entry, which on function exit are flushed to
+ * the global accumulators (created by coverage_counter_alloc ()).
+ *
+ * [1] TODO: expand really a shrinking set
+ */
 int
-find_condition_blocks (
+find_conditions (
     basic_block entry,
     basic_block exit,
     basic_block *blocks,
@@ -675,9 +816,9 @@ find_condition_blocks (
     mcdc_ctx ctx (maxsize);
     ctx.blocks = blocks;
     ctx.sizes = sizes + 1;
-    ctx.maxelems = maxsize;
+    ctx.maxsize = maxsize;
     sizes[0] = sizes[1] = 0;
-    find_conditions_between (ctx, entry, exit);
+    collect_conditions (ctx, entry, exit);
 
     /* partial sum */
     for (int i = 0; i < ctx.exprs; ++i)
@@ -686,7 +827,7 @@ find_condition_blocks (
     return ctx.exprs;
 }
 
-int instrument_decision (basic_block *blocks, int nblocks, int idx_decision)
+int instrument_decisions (basic_block *blocks, int nblocks, int idx_decision)
 {
     gcc_assert (nblocks > 2);
 
@@ -704,10 +845,13 @@ int instrument_decision (basic_block *blocks, int nblocks, int idx_decision)
             gcov_type_node
         ),
     };
-    zero_accumulator_on_function_entry
-        (accu[0], ENTRY_BLOCK_PTR_FOR_FN (cfun));
-    zero_accumulator_on_function_entry
-        (accu[1], ENTRY_BLOCK_PTR_FOR_FN (cfun));
+    for (int i = 0; i < 2; i++) {
+        tree acc = accu[i];
+        tree zero = build_int_cst (gcov_type_node, 0);
+        edge e; edge_iterator ei;
+        FOR_EACH_EDGE (e, ei, ENTRY_BLOCK_PTR_FOR_FN (cfun)->succs)
+            gsi_insert_on_edge (e, gimple_build_assign (acc, zero));
+    }
 
     gcov_type_unsigned  masks_static[64];
     gcov_type_unsigned *masks_dynamic = NULL;
