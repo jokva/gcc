@@ -28,6 +28,7 @@ extern void debug_gimple_stmt (gimple *);
 extern void debug_gimple_seq (gimple_seq);
 extern void print_gimple_seq (FILE *, gimple_seq, int, dump_flags_t);
 extern void print_gimple_stmt (FILE *, gimple *, int, dump_flags_t = TDF_NONE);
+extern void print_gimple_stmt_nonewline (FILE *, gimple *, int, dump_flags_t = TDF_NONE);
 extern void debug (gimple &ref);
 extern void debug (gimple *ptr);
 extern void print_gimple_expr (FILE *, gimple *, int, dump_flags_t = TDF_NONE);

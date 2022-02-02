@@ -25,6 +25,7 @@ along with GCC; see the file COPYING3.  If not see
    Tree-based version.  See profile.cc for overview.  */
 
 #define INCLUDE_ALGORITHM
+#define INCLUDE_STRING
 #include "config.h"
 #include "system.h"
 #include "coretypes.h"
@@ -61,6 +62,8 @@ along with GCC; see the file COPYING3.  If not see
 #include "symtab-thunks.h"
 #include "cfganal.h"
 #include "cfgloop.h"
+
+#include "gimple-pretty-print.h"
 
 static GTY(()) tree gcov_type_node;
 static GTY(()) tree tree_interval_profiler_fn;
@@ -793,6 +796,61 @@ find_conditions (
     int *sizes,
     int maxsize)
 {
+    printf ("digraph { // %s\n", current_function_name());
+    basic_block bb;
+    FOR_BB_BETWEEN (bb, entry, exit, next_bb) {
+        auto gs = gsi_stmt (gsi_last_bb (bb));
+        printf ("    A%d [label=\"", bb->index);
+        print_gimple_stmt_nonewline (stdout, gs, 0, TDF_SLIM);
+        printf ("\"];\n");
+    }
+    unsigned flag[] = {
+        EDGE_ABNORMAL,
+        EDGE_EH,
+        EDGE_TRUE_VALUE,
+        EDGE_FALSE_VALUE,
+
+    };
+
+    const char* labels[] = {
+        "ABNORMAL",
+        "EH",
+        "TRUE",
+        "FALSE",
+    };
+
+    const char* colors[] = {
+        "darkgreen",
+        "darkmagenta",
+        "blue",
+        "red",
+    };
+
+    FOR_BB_BETWEEN (bb, entry, exit->prev_bb, next_bb) {
+        for (edge e : bb->succs) {
+            std::string label;
+            std::string color = "black";
+            for (unsigned i = 0; i < sizeof (flag) / sizeof (flag[0]); i++) {
+                if (e->flags & flag[i]) {
+                    label += labels[i];
+                    label += " ";
+                    color = colors[i];
+                }
+            }
+
+            if (!label.empty())
+                label.pop_back();
+
+            printf ("    A%d -> A%d [label=\"%s\", color=\"%s\"];\n",
+                    e->src->index,
+                    e->dest->index,
+                    label.c_str(),
+                    color.c_str()
+            );
+        }
+    }
+    printf ("}\n");
+
     record_loop_exits ();
     if (!dom_info_available_p (CDI_POST_DOMINATORS))
         calculate_dominance_info (CDI_POST_DOMINATORS);

@@ -159,6 +159,17 @@ print_gimple_stmt (FILE *file, gimple *g, int spc, dump_flags_t flags)
   pp_newline_and_flush (&buffer);
 }
 
+void
+print_gimple_stmt_nonewline (FILE *file, gimple *g, int spc, dump_flags_t flags)
+{
+  pretty_printer buffer;
+  pp_needs_newline (&buffer) = false;
+  buffer.buffer->stream = file;
+  pp_gimple_stmt_1 (&buffer, g, spc, flags);
+  pp_really_flush (&buffer);
+  //pp_newline_and_flush (&buffer);
+}
+
 DEBUG_FUNCTION void
 debug (gimple &ref)
 {
