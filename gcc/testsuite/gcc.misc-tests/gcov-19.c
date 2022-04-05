@@ -234,7 +234,7 @@ void mcdc008b (int a)
 void mcdc008c (int a)
 {
     // should work, even with no body
-    while (a) /* conditions(2/2) */
+    while (a) /* conditions(2/2) */
 	break;
 }
 
