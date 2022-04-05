@@ -222,9 +222,6 @@ single_edge (const vec<edge, va_gc> *edges)
 
    contract_edge ignores the series of intermediate nodes and makes a virtual
    edge A -> C, without having to construct a new simplified CFG explicitly.
-
-   Such an expression cannot correctly be repreted as two 1-term expressions,
-   as it would break the condition masking.
  */
 edge
 contract_edge (edge e, sbitmap expr)
@@ -245,7 +242,7 @@ contract_edge (edge e, sbitmap expr)
 	if (!single (succe->dest->preds))
 	    return e;
 
-	bitmap_set_bit (expr, dest->index);
+	if (expr) bitmap_set_bit (expr, dest->index);
 	e = succe;
     }
 }
@@ -459,6 +456,101 @@ auto_vec< vec< basic_block > > paths_between (
    bit-sets are output in pairs, one for each decision (the outcome of the
    boolean expression, or which arc to take in the CFG).
  */
+
+vec< unsigned > fill (const sbitmap G, basic_block v)
+{
+    auto_vec< unsigned > reachable;
+    reachable.safe_grow_cleared (SBITMAP_SIZE (G));
+    for (auto& x : reachable)
+	x = 0;
+
+    const unsigned flags[] = { EDGE_TRUE_VALUE, EDGE_FALSE_VALUE };
+
+    //printf("v: %d\n", v->index);
+    auto_vec< basic_block > processed;
+
+    auto_vec< basic_block > queue;
+    for (const unsigned flag : flags)
+    {
+	queue.truncate (0);
+	for (edge e : v->preds)
+	{
+	    e = contract_edge_up (e, NULL);
+	    if (bitmap_bit_p (G, e->src->index) && (e->flags & flag) && !queue.contains (e->src))
+		queue.safe_push (e->src);
+	}
+
+	while (!queue.is_empty ())
+	{
+	    basic_block q = queue.pop ();
+	    if (processed.contains (q))
+		continue;
+	    processed.safe_push (q);
+
+	    reachable[q->index] |= flag;
+
+	    for (edge e : q->preds)
+	    {
+		e = contract_edge_up (e, NULL);
+		if (bitmap_bit_p (G, e->src->index) && (e->flags & flag) && !processed.contains (e->src))
+		    queue.safe_push (e->src);
+	    }
+	}
+    }
+
+    return reachable.copy ();
+}
+
+bool shares_prefix (
+    basic_block b1,
+    basic_block b2,
+    basic_block b3,
+    unsigned int flag)
+{
+    //printf ("shares-prefix %d %d %d\n", b1->index, b2->index, b3->index);
+
+    while (true)
+    {
+top1:
+	for (edge e : b2->succs)
+	{
+	    e = contract_edge (e, NULL);
+	    if (e->flags & flag)
+	    {
+		if (e->dest == b1)
+		    goto next;
+
+		b2 = e->dest;
+		goto top1;
+	    }
+	}
+	gcc_assert (false);
+    }
+
+next:
+
+    while (true)
+    {
+top2:
+	if (b1 == b3)
+	    return false;
+
+	if (b2 == b3)
+	    return true;
+
+	for (edge e : b3->succs)
+	{
+	    e = contract_edge (e, NULL);
+	    if (e->flags & flag)
+	    {
+		b3 = e->dest;
+		goto top2;
+	    }
+	}
+	gcc_assert (false);
+    }
+}
+
 void
 find_subexpr_masks (
     const basic_block *blocks,
@@ -470,10 +562,63 @@ find_subexpr_masks (
     for (int i = 0; i < nblocks; i++)
 	bitmap_set_bit (expr, blocks[i]->index);
 
+    auto_vec< vec < unsigned > > paths;
+    for (int i = 0; i < nblocks; i++)
+	paths.safe_push (fill (expr, blocks[i]));
+
+    //for (int i = 0; i < nblocks; i++)
+    //{
+    //    printf("%d.t: ", blocks[i]->index);
+    //    for (int k = 0; k < nblocks; k++)
+    //        if (paths[i][k] & EDGE_TRUE_VALUE)
+    //    	printf("%d ", k);
+
+    //    printf("\n");
+    //    printf("%d.f: ", blocks[i]->index);
+    //    for (int k = 0; k < nblocks; k++)
+    //        if (paths[i][k] & EDGE_FALSE_VALUE)
+    //    	printf("%d ", k);
+    //    printf("\n");
+    //    printf("\n");
+    //}
+
+    const unsigned flags[] = {
+	EDGE_TRUE_VALUE,
+	EDGE_FALSE_VALUE,
+	EDGE_TRUE_VALUE,
+    };
+    for (int i1 = 0; i1 < nblocks; i1++)
+    for (int i2 = 0; i2 < nblocks; i2++)
+    for (int i3 = 0; i3 < nblocks; i3++)
+    {
+	if (i1 == i2 || i1 == i3 || i2 == i3)
+	    continue;
+
+	basic_block b1 = blocks[i1];
+	basic_block b2 = blocks[i2];
+	basic_block b3 = blocks[i3];
+
+	for (int k = 0; k < 2; k++)
+	{
+	    if (!(paths[i1][b2->index] & flags[k])) continue;
+	    if (!(paths[i1][b3->index] & flags[k])) continue;
+	    if (!(paths[i2][b3->index] & flags[k + 1])) continue;
+	    if (shares_prefix (b1, b2, b3, flags[k])) continue;
+
+	    /* add-mask */
+	    //printf ("%d-%d = %d-%d = %s, %d..%d = %s\n",
+	    //    b1->index, b2->index,
+	    //    b1->index, b3->index,
+	    //    (k == 0 ? "t" : "f"),
+	    //    b2->index, b3->index,
+	    //    (k == 0 ? "f" : "t")
+	    //);
+	}
+    }
+
     for (int i = 0; i < nblocks; i++)
     {
 	basic_block block = blocks[i];
-
 	for (edge e : block->succs)
 	{
 	    /* skip non-condition edges */
@@ -568,6 +713,11 @@ collect_neighbors (basic_block *blocks, int nblocks, sbitmap reachable)
 	    if (bitmap_bit_p (reachable, e->dest->index))
 		continue;
 
+            // hacky loop check
+            // but should maybe apply to got as well
+            if (e->dest->index < e->src->index)
+                continue;
+
 	    bitmap_set_bit (reachable, e->dest->index);
 	    exits[n++] = e->dest;
 	}
@@ -660,6 +810,8 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     basic_block *blocks = ctx.blocks;
     sbitmap expr = ctx.expr;
     sbitmap reachable = ctx.reachable;
+    auto_sbitmap exists (SBITMAP_SIZE (expr));
+    bitmap_clear (exists);
     bitmap_clear (expr);
     bitmap_clear (reachable);
     blocks[0] = pre;
@@ -671,39 +823,66 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     const bool dowhile = !loop_exits_from_bb_p (pre->loop_father, pre);
     const bool isloop = bb_loop_header_p (pre) && !dowhile;
     if (find_edge (pre, post) && !isloop)
-	return 1;
+        return 1;
 
     const int nblocks = collect_reachable_conditionals
 	(pre, post, blocks, ctx.maxsize, expr);
     if (nblocks == 1)
 	return nblocks;
 
+    //printf("G: ");
+    //for (int i = 0; i < nblocks; i++)
+    //        printf("%d ", blocks[i]->index);
+    //printf("\n");
+
     bitmap_copy (reachable, expr);
+    bitmap_copy (exists,    expr);
     const int nexits = collect_neighbors (blocks, nblocks, reachable);
-    if (nexits == 2)
-	return nblocks;
+
+    //printf("N(G): ");
+    //for (int i = 0; i < nexits; i++)
+    //        printf("%d ", blocks[nblocks + i]->index);
+    //printf("\n");
+
+//    if (nexits == 2)
+//	return nblocks;
 
     /* Find reachable nodes from the neighbors.  */
     basic_block *exits = blocks + nblocks;
     for (int i = 0; i < nexits; i++)
     {
+        //printf ("N = %d\n\t", exits[i]->index);
+	bitmap_clear (reachable);
 	for (edge e : exits[i]->preds)
 	{
-	    if (!dominated_by_p (CDI_DOMINATORS, e->src, pre))
-		continue;
+            // skip any edge not spanning the cut
+            if (!bitmap_bit_p (exists, e->src->index))
+                    continue;
+	//    if (!dominated_by_p (CDI_DOMINATORS, e->src, pre))
+	//	continue;
 
-	    bitmap_clear (reachable);
 	    find_reachable (reachable, e->src, pre, exits + nexits);
-	    for (edge f : exits[i]->preds)
-		bitmap_set_bit (reachable, f->src->index);
-	    bitmap_and (expr, expr, reachable);
+	//    for (edge f : exits[i]->preds)
+	//	bitmap_set_bit (reachable, f->src->index);
 	}
+        //for (int i = 0; i < nblocks; i++)
+        //        if (bitmap_bit_p (reachable, blocks[i]->index))
+        //                printf("%d ", blocks[i]->index);
+        //printf("\n");
+	    bitmap_and (expr, expr, reachable);
     }
 
     int k = 0;
     for (int i = 0; i < nblocks; i++)
 	if (bitmap_bit_p (expr, blocks[i]->index))
 	    blocks[k++] = blocks[i];
+
+    //printf("E: ");
+    //for (int i = 0; i < k; i++)
+    //        printf("%d ", blocks[i]->index);
+    //printf("\n");
+    //printf("\n");
+
     return k;
 }
 
@@ -902,6 +1081,15 @@ find_conditions (
 	calculate_dominance_info (CDI_DOMINATORS);
 	free_dom = true;
     }
+
+    //printf("digraph {\n");
+    //basic_block bb;
+    //FOR_BB_BETWEEN (bb, entry, exit, next_bb) {
+    //    for (auto e : bb->succs) {
+    //            printf ("A%d -> A%d\n", e->src->index, e->dest->index);
+    //    }
+    //}
+    //printf("}\n");
 
     conds_ctx ctx (maxsize);
     ctx.blocks = blocks;

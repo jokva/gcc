@@ -142,7 +142,7 @@ void mcdc005b (int a, int b, int c, int d)
     /* This is where masking MC/DC gets unintuitive:
 
        1 1 0 0 => covers 1 (d = 0) as && 0 masks everything to the left
-       1 0 0 0 => covers 2 (b = 0, c = 0) as (a && 0) masks a, and d is never
+       1 0 0 0 => covers 2 (b = 0, c = 0) as (a && 0) masks a and d is never
        evaluated */
     if ((a && (b || c)) && d) /* conditions(3/8) true(0 1 2 3) false(0) */
 			      /* conditions(end) */
@@ -153,7 +153,7 @@ void mcdc005b (int a, int b, int c, int d)
 
 void mcdc005c (int a, int b, int c, int d) {
     if (a || (b && c) || d) /* conditions(2/8) true(0 3) false(0 1 2 3) */
-                            /* conditions(end) */
+			    /* conditions(end) */
         x = a + b + c + d;
 }
 
