@@ -16,7 +16,7 @@ void mcdc001a (int a, int b)
 
 void mcdc001b (int a, int b)
 {
-    if (a || b) /* conditions(3/4) true(0) false() */
+    if (a || b) /* conditions(3/4) true(0) */
 		/* conditions(end) */
 	x = 1;
     else
@@ -33,7 +33,7 @@ void mcdc001c (int a, int b)
 
 void mcdc001d (int a, int b, int c)
 {
-    if (a || b || c) /* conditions(3/6) false(1 2) true(2) */
+    if (a || b || c) /* conditions(2/6) false(0 1 2) true(2) */
 		     /* conditions(end) */
 	x = 1;
 }
@@ -139,12 +139,24 @@ void mcdc005a (int a, int b, int c)
 
 void mcdc005b (int a, int b, int c, int d)
 {
-    if ((a && (b || c)) && d) /* conditions(4/8) true(1 2 3) false(0) */
+    /* This is where masking MC/DC gets unintuitive:
+
+       1 1 0 0 => covers 1 (d = 0) as && 0 masks everything to the left
+       1 0 0 0 => covers 2 (b = 0, c = 0) as (a && 0) masks a, and d is never
+       evaluated */
+    if ((a && (b || c)) && d) /* conditions(3/8) true(0 1 2 3) false(0) */
 			      /* conditions(end) */
 	x = 1;
     else
 	x = 2;
 }
+
+void mcdc005c (int a, int b, int c, int d) {
+    if (a || (b && c) || d) /* conditions(2/8) true(0 3) false(0 1 2 3) */
+                            /* conditions(end) */
+        x = a + b + c + d;
+}
+
 
 /* nested conditionals */
 void mcdc006a (int a, int b, int c, int d, int e)
@@ -624,6 +636,8 @@ int main ()
 
     mcdc005b (1, 1, 0, 0);
     mcdc005b (1, 0, 0, 0);
+
+    mcdc005c (0, 1, 1, 0);
 
     mcdc006a (0, 0, 0, 0, 0);
     mcdc006a (1, 0, 0, 0, 0);

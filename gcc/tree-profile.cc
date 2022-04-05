@@ -290,52 +290,116 @@ is_conditional_p (const basic_block b)
    that will apply the masking operation, with the remaining blocks effectively
    unordered.
  */
-int
-find_conditions_masked_by (
-    basic_block block,
-    const sbitmap expr,
-    const unsigned *flag,
-    basic_block *out,
-    int maxsize)
+//int
+//find_conditions_masked_by (
+//    basic_block block,
+//    const sbitmap expr,
+//    const unsigned *flag,
+//    basic_block *out,
+//    int maxsize)
+//{
+//    int n = 0;
+//    for (edge e : block->preds)
+//    {
+//	/* Skip any predecessor not in the expression - there might be such an
+//	   edge to the enclosing expression or in the presence of loops, but
+//	   masking cannot happen outside the expression itself. */
+//	if (!bitmap_bit_p (expr, e->src->index))
+//	    continue;
+//
+//	if (!(e->flags & flag[0]))
+//            continue;
+//
+//        while (true) {
+//	    e = contract_edge_up (e, NULL);
+//            // TODO: if works, single () could return pointer instead, since it
+//            // could be single + complex
+//            if (single (e->src->preds) && single_pred_edge (e->src)->flags & flag[0])
+//                e = single_pred_edge (e->src);
+//            else
+//                break;
+//        }
+//	out[n++] = e->src;
+//    }
+//
+//    if (n > 1)
+//    {
+//	basic_block *top = std::max_element (out, out + n, index_lt);
+//	std::iter_swap (top, out);
+//    }
+//
+//    return n;
+//
+//    for (int pos = 0; pos < n; pos++)
+//    {
+//	for (edge e : out[pos]->preds)
+//	{
+//	    if (!bitmap_bit_p (expr, e->src->index))
+//		continue;
+//	    if (index_of (e->src, out, n) != -1)
+//		continue;
+//
+//	    e = contract_edge_up (e, NULL);
+//	    if (e->flags & flag[1])
+//		out[n++] = e->src;
+//
+//	    gcc_assert (n < maxsize);
+//	}
+//    }
+//
+//    return n;
+//}
+
+void paths_between (
+    basic_block bot,
+    basic_block top,
+    unsigned int flag,
+    const basic_block *G,
+    const sbitmap Gs,
+    auto_vec< vec< basic_block > >& all_paths,
+    auto_vec< basic_block >& path
+    )
 {
-    int n = 0;
-    for (edge e : block->preds)
+    if (bot == top)
     {
-	/* Skip any predecessor not in the expression - there might be such an
-	   edge to the enclosing expression or in the presence of loops, but
-	   masking cannot happen outside the expression itself. */
-	if (!bitmap_bit_p (expr, e->src->index))
+	all_paths.safe_push (path.copy ());
+	return;
+    }
+
+    if (bot == G[0])
+	return;
+
+    for (edge e : bot->preds)
+    {
+	e = contract_edge_up (e, NULL);
+	if ((e->flags & flag))
 	    continue;
 
-	e = contract_edge_up (e, NULL);
-	if (e->flags & flag[0])
-	    out[n++] = e->src;
+	/* outside expression */
+	if (!bitmap_bit_p (Gs, e->src->index))
+	    continue;
+
+	/* don't add twice (loops) */
+	if (path.contains (e->src))
+	    continue;
+
+	path.safe_push (e->src);
+	paths_between (e->src, top, flag, G, Gs, all_paths, path);
+	path.pop ();
     }
+}
 
-    if (n > 1)
-    {
-	basic_block *top = std::max_element (out, out + n, index_lt);
-	std::iter_swap (top, out);
-    }
-
-    for (int pos = 0; pos < n; pos++)
-    {
-	for (edge e : out[pos]->preds)
-	{
-	    if (!bitmap_bit_p (expr, e->src->index))
-		continue;
-	    if (index_of (e->src, out, n) != -1)
-		continue;
-
-	    e = contract_edge_up (e, NULL);
-	    if (e->flags & flag[1])
-		out[n++] = e->src;
-
-	    gcc_assert (n < maxsize);
-	}
-    }
-
-    return n;
+auto_vec< vec< basic_block > > paths_between (
+    basic_block bot,
+    basic_block top,
+    unsigned int flag,
+    const basic_block *G,
+    const sbitmap Gs)
+{
+    auto_vec< vec< basic_block > > all_paths;
+    auto_vec< basic_block > path;
+    paths_between (bot, top, flag, G, Gs, all_paths, path);
+    return all_paths;
 }
 
 /* Scan the blocks that make up an expression and look for conditions that
@@ -401,13 +465,6 @@ find_subexpr_masks (
     int nblocks,
     gcov_type_unsigned *masks)
 {
-    const unsigned flags[] = {
-	EDGE_TRUE_VALUE,
-	EDGE_FALSE_VALUE,
-	EDGE_TRUE_VALUE,
-    };
-
-    basic_block path[CONDITIONS_MAX_TERMS];
     auto_sbitmap expr (n_basic_blocks_for_fn (cfun));
     bitmap_clear (expr);
     for (int i = 0; i < nblocks; i++)
@@ -416,22 +473,40 @@ find_subexpr_masks (
     for (int i = 0; i < nblocks; i++)
     {
 	basic_block block = blocks[i];
-	if (single_pred_p (block))
-	    continue;
 
-	for (int k = 0; k < 2; k++)
+	for (edge e : block->succs)
 	{
-	    const int n = find_conditions_masked_by
-		(block, expr, flags + k, path, CONDITIONS_MAX_TERMS);
-
-	    if (n < 2)
+	    /* skip non-condition edges */
+	    if (!(e->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE)))
 		continue;
 
-	    const int m = 2*index_of (path[0], blocks, nblocks) + k;
-	    for (int i = 1; i < n; i++)
+	    basic_block outcome = e->dest;
+	    for (edge e_out : outcome->preds)
 	    {
-		const int index = index_of (path[i], blocks, nblocks);
-		masks[m] |= gcov_type_unsigned (1) << index;
+		if (!bitmap_bit_p (expr, e_out->src->index))
+		    continue;
+
+		const unsigned int flag = e_out->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE);
+		auto paths = paths_between (e_out->src, block, flag, blocks, expr);
+
+		const int k = !!!(e_out->flags & EDGE_TRUE_VALUE);
+		const int m = 2*index_of (e_out->src, blocks, nblocks) + k;
+		for (auto& path : paths)
+		{
+		    for (edge e : outcome->preds) {
+			if (e == e_out) continue;
+			if (e->src->index > e_out->src->index) continue;
+			if (path.contains (e->src)) continue;
+			if ((e->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE)) == flag)
+			    path.safe_push (e->src);
+		    }
+
+		    for (auto b : path)
+		    {
+			const int index = index_of (b, blocks, nblocks);
+			masks[m] |= gcov_type_unsigned (1) << index;
+		    }
+		}
 	    }
 	}
     }
