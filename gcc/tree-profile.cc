@@ -283,122 +283,6 @@ is_conditional_p (const basic_block b)
     return t && f;
 }
 
-/* The first block in the output will always be the source block of the edge
-   that will apply the masking operation, with the remaining blocks effectively
-   unordered.
- */
-//int
-//find_conditions_masked_by (
-//    basic_block block,
-//    const sbitmap expr,
-//    const unsigned *flag,
-//    basic_block *out,
-//    int maxsize)
-//{
-//    int n = 0;
-//    for (edge e : block->preds)
-//    {
-//	/* Skip any predecessor not in the expression - there might be such an
-//	   edge to the enclosing expression or in the presence of loops, but
-//	   masking cannot happen outside the expression itself. */
-//	if (!bitmap_bit_p (expr, e->src->index))
-//	    continue;
-//
-//	if (!(e->flags & flag[0]))
-//            continue;
-//
-//        while (true) {
-//	    e = contract_edge_up (e, NULL);
-//            // TODO: if works, single () could return pointer instead, since it
-//            // could be single + complex
-//            if (single (e->src->preds) && single_pred_edge (e->src)->flags & flag[0])
-//                e = single_pred_edge (e->src);
-//            else
-//                break;
-//        }
-//	out[n++] = e->src;
-//    }
-//
-//    if (n > 1)
-//    {
-//	basic_block *top = std::max_element (out, out + n, index_lt);
-//	std::iter_swap (top, out);
-//    }
-//
-//    return n;
-//
-//    for (int pos = 0; pos < n; pos++)
-//    {
-//	for (edge e : out[pos]->preds)
-//	{
-//	    if (!bitmap_bit_p (expr, e->src->index))
-//		continue;
-//	    if (index_of (e->src, out, n) != -1)
-//		continue;
-//
-//	    e = contract_edge_up (e, NULL);
-//	    if (e->flags & flag[1])
-//		out[n++] = e->src;
-//
-//	    gcc_assert (n < maxsize);
-//	}
-//    }
-//
-//    return n;
-//}
-
-void paths_between (
-    basic_block bot,
-    basic_block top,
-    unsigned int flag,
-    const basic_block *G,
-    const sbitmap Gs,
-    auto_vec< vec< basic_block > >& all_paths,
-    auto_vec< basic_block >& path
-    )
-{
-    if (bot == top)
-    {
-	all_paths.safe_push (path.copy ());
-	return;
-    }
-
-    if (bot == G[0])
-	return;
-
-    for (edge e : bot->preds)
-    {
-	e = contract_edge_up (e, NULL);
-	if ((e->flags & flag))
-	    continue;
-
-	/* outside expression */
-	if (!bitmap_bit_p (Gs, e->src->index))
-	    continue;
-
-	/* don't add twice (loops) */
-	if (path.contains (e->src))
-	    continue;
-
-	path.safe_push (e->src);
-	paths_between (e->src, top, flag, G, Gs, all_paths, path);
-	path.pop ();
-    }
-}
-
-auto_vec< vec< basic_block > > paths_between (
-    basic_block bot,
-    basic_block top,
-    unsigned int flag,
-    const basic_block *G,
-    const sbitmap Gs)
-{
-    auto_vec< vec< basic_block > > all_paths;
-    auto_vec< basic_block > path;
-    paths_between (bot, top, flag, G, Gs, all_paths, path);
-    return all_paths;
-}
-
 /* Scan the blocks that make up an expression and look for conditions that
    would mask other conditions.  For a deeper discussion on masking, see
    Whalen, Heimdahl, De Silva "Efficient Test Coverage Measurement for MC/DC".
@@ -461,12 +345,8 @@ vec< unsigned > fill (const sbitmap G, basic_block v)
 {
     auto_vec< unsigned > reachable;
     reachable.safe_grow_cleared (SBITMAP_SIZE (G));
-    for (auto& x : reachable)
-	x = 0;
 
     const unsigned flags[] = { EDGE_TRUE_VALUE, EDGE_FALSE_VALUE };
-
-    //printf("v: %d\n", v->index);
     auto_vec< basic_block > processed;
 
     auto_vec< basic_block > queue;
@@ -507,8 +387,6 @@ bool shares_prefix (
     basic_block b3,
     unsigned int flag)
 {
-    //printf ("shares-prefix %d %d %d\n", b1->index, b2->index, b3->index);
-
     while (true)
     {
 top1:
@@ -551,6 +429,25 @@ top2:
     }
 }
 
+basic_block neck (basic_block b1, basic_block b2, unsigned int flag)
+{
+    while (true)
+    {
+	for (edge e : b2->succs)
+	{
+	    e = contract_edge (e, NULL);
+	    if (e->flags & flag)
+	    {
+		if (e->dest == b1)
+		    return b2;
+
+		b2 = e->dest;
+		break;
+	    }
+	}
+    }
+}
+
 void
 find_subexpr_masks (
     const basic_block *blocks,
@@ -566,22 +463,7 @@ find_subexpr_masks (
     for (int i = 0; i < nblocks; i++)
 	paths.safe_push (fill (expr, blocks[i]));
 
-    //for (int i = 0; i < nblocks; i++)
-    //{
-    //    printf("%d.t: ", blocks[i]->index);
-    //    for (int k = 0; k < nblocks; k++)
-    //        if (paths[i][k] & EDGE_TRUE_VALUE)
-    //    	printf("%d ", k);
-
-    //    printf("\n");
-    //    printf("%d.f: ", blocks[i]->index);
-    //    for (int k = 0; k < nblocks; k++)
-    //        if (paths[i][k] & EDGE_FALSE_VALUE)
-    //    	printf("%d ", k);
-    //    printf("\n");
-    //    printf("\n");
-    //}
-
+    (void) index_of;
     const unsigned flags[] = {
 	EDGE_TRUE_VALUE,
 	EDGE_FALSE_VALUE,
@@ -603,56 +485,29 @@ find_subexpr_masks (
 	    if (!(paths[i1][b2->index] & flags[k])) continue;
 	    if (!(paths[i1][b3->index] & flags[k])) continue;
 	    if (!(paths[i2][b3->index] & flags[k + 1])) continue;
+
 	    if (shares_prefix (b1, b2, b3, flags[k])) continue;
 
+	    basic_block n = neck (b1, b2, flags[k]);
+	    //// the edge n -> b1 triggers masking of b3
+	    gcc_assert (find_edge (n, b1));
+
+	    //const int index = index_of (b3, blocks, nblocks);
+	    //const int m = 2*index_of (n, blocks, nblocks) + k;
+
+	    const int index = i3;
+	    const int m = 2*i2 + k;
+	    masks[m] |= gcov_type_unsigned (1) << index;
+
 	    /* add-mask */
-	    //printf ("%d-%d = %d-%d = %s, %d..%d = %s\n",
+	    //printf ("%d-%d = %d-%d = %s, %d..%d = %s - neck = %d\n",
 	    //    b1->index, b2->index,
 	    //    b1->index, b3->index,
 	    //    (k == 0 ? "t" : "f"),
 	    //    b2->index, b3->index,
-	    //    (k == 0 ? "f" : "t")
+	    //    (k == 0 ? "f" : "t"),
+	    //    n->index
 	    //);
-	}
-    }
-
-    for (int i = 0; i < nblocks; i++)
-    {
-	basic_block block = blocks[i];
-	for (edge e : block->succs)
-	{
-	    /* skip non-condition edges */
-	    if (!(e->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE)))
-		continue;
-
-	    basic_block outcome = e->dest;
-	    for (edge e_out : outcome->preds)
-	    {
-		if (!bitmap_bit_p (expr, e_out->src->index))
-		    continue;
-
-		const unsigned int flag = e_out->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE);
-		auto paths = paths_between (e_out->src, block, flag, blocks, expr);
-
-		const int k = !!!(e_out->flags & EDGE_TRUE_VALUE);
-		const int m = 2*index_of (e_out->src, blocks, nblocks) + k;
-		for (auto& path : paths)
-		{
-		    for (edge e : outcome->preds) {
-			if (e == e_out) continue;
-			if (e->src->index > e_out->src->index) continue;
-			if (path.contains (e->src)) continue;
-			if ((e->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE)) == flag)
-			    path.safe_push (e->src);
-		    }
-
-		    for (auto b : path)
-		    {
-			const int index = index_of (b, blocks, nblocks);
-			masks[m] |= gcov_type_unsigned (1) << index;
-		    }
-		}
-	    }
 	}
     }
 }
