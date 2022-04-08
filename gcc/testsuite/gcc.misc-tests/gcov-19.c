@@ -276,10 +276,18 @@ void mcdc010a(int a, int b)
     }
 }
 
+void mcdc010b ()
+{
+    for (int a = 0; a <= 1; ++a) /* conditions(2/2) */
+    {
+	x = a;
+    }
+}
+
 int always (int) { return 1; }
 
 /* no-condition infinite loops */
-void mcdc010b (int a)
+void mcdc010c (int a)
 {
     for (;;)
     {
@@ -593,6 +601,15 @@ void mcdc021a ()
 	;
 }
 
+void fun (int a, int b, int c, int d, int e)
+{
+    if (a && (b || c) && (d || e))
+	x = a + b + c + d + e;
+    else {
+	x = x;
+    }
+}
+
 /* test with functions as conditionals */
 
 int main ()
@@ -676,7 +693,9 @@ int main ()
     mcdc010a (0, 9);
     mcdc010a (2, 1);
 
-    mcdc010b (1);
+    mcdc010b ();
+
+    mcdc010c (1);
 
     mcdc011a (0, 0, 0);
     mcdc011a (1, 1, 0);
@@ -744,6 +763,8 @@ int main ()
 
     mcdc020c (0, 1);
     mcdc020c (1, 1);
+
+    fun (1, 0, 1, 0, 1);
 }
 
 /* { dg-final { run-gcov conditions { --conditions gcov-19.c } } } */

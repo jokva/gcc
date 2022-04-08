@@ -346,6 +346,39 @@ fill (const basic_block* blocks, int nblocks)
     return map;
 }
 
+void
+fillancestors (auto_vec< unsigned >& map, const basic_block *blocks,
+	int nblocks, int index)
+{
+    const unsigned int mark = LAST_CFG_EDGE_FLAG << 1;
+    if (map[index * nblocks] & mark)
+	return;
+
+    map[index * nblocks] |= mark;
+    for (edge e : blocks[index]->preds)
+    {
+	e = contract_edge_up (e, NULL);
+	const int pred = index_of (e->src, blocks, nblocks);
+	if (pred == -1)
+	    continue;
+
+	fillancestors (map, blocks, nblocks, pred);
+	map[index*nblocks + pred] |= 1;
+	for (int i = 0; i < pred; i++)
+	    map[index*nblocks + i] |= (map[pred*nblocks + i] & 1);
+    }
+}
+
+auto_vec< unsigned >
+fillancestors (const basic_block* blocks, int nblocks)
+{
+    auto_vec< unsigned > map;
+    map.safe_grow_cleared (nblocks * nblocks);
+    for (int i = 0; i < nblocks; i++)
+	fillancestors (map, blocks, nblocks, i);
+    return map;
+}
+
 
 /* Scan the blocks that make up an expression and look for conditions that
    would mask other conditions.  For a deeper discussion on masking, see
@@ -410,42 +443,174 @@ find_subexpr_masks (
     gcov_type_unsigned *masks)
 {
     const auto paths = fill (blocks, nblocks);
+    const auto ancestors = fillancestors (blocks, nblocks);
     const unsigned flags[] = {
 	EDGE_TRUE_VALUE,
 	EDGE_FALSE_VALUE,
-	EDGE_TRUE_VALUE,
+	//EDGE_TRUE_VALUE,
     };
 
-    for (int i1 = 0; i1 < nblocks; i1++)
-    for (int i2 = 0; i2 < nblocks; i2++)
-    for (int i3 = 0; i3 < nblocks; i3++)
+    for (int i = 0; i < nblocks; i++)
     {
-	if (i1 == i2 || i1 == i3 || i2 == i3)
-	    continue;
-
-	basic_block b1 = blocks[i1];
-	basic_block b2 = blocks[i2];
-	basic_block b3 = blocks[i3];
-	for (int k = 0; k < 2; k++)
+	basic_block b = blocks[i];
+	for (unsigned flag : flags)
+	for (edge e1 : b->preds)
+	for (edge e2 : b->preds)
 	{
-	    /* sanity check - (at least) one of the edges in the triangle must
-	       be direct */
-	    const edge e2 = find_edge (b2, b1);
-	    const edge e3 = find_edge (b3, b1);
-	    const bool direct2 = e2 && e2->flags & flags[k];
-	    const bool direct3 = e3 && e3->flags & flags[k];
-	    if (!direct2 && !direct3)
+	    if (e1 == e2)
+		continue;
+	    if (!(e1->flags & e2->flags & flag))
 		continue;
 
-	    if (!(paths[i1*nblocks + i2] & flags[k]))     continue;
-	    if (!(paths[i1*nblocks + i3] & flags[k]))     continue;
-	    if (!(paths[i2*nblocks + i3] & flags[k + 1])) continue;
+	    const int i1 = index_of (e1->src, blocks, nblocks);
+	    const int i2 = index_of (e2->src, blocks, nblocks);
+	    if (i1 == -1 || i2 == -1)
+		continue;
 
-	    const int index = i3;
-	    const int m = 2*i2 + k;
-	    masks[m] |= gcov_type_unsigned (1) << index;
+	    if (i1 > i2)
+		continue;
+
+	    printf ("\tmasking %d .. %d (from %d)\n", i1, i2, i);
+
+	    /* direct masks */
+	    const int m = i2*2 + !!(flag == EDGE_FALSE_VALUE);
+	    masks[m] |= gcov_type_unsigned (1) << i1;
+
+	    auto_vec< basic_block, 32 > queue;
+	    queue.safe_push (e2->src);
+
+	    const unsigned oflag = flag == EDGE_TRUE_VALUE ? EDGE_FALSE_VALUE : EDGE_TRUE_VALUE;
+	    /* push the subexpression upwards */
+	    while (!queue.is_empty ())
+	    {
+		basic_block q = queue.pop ();
+		if (!single (q->preds))
+		{
+		    queue.truncate (0);
+		    for (edge e : q->preds)
+			if (e->flags & oflag)
+			    queue.safe_push (e->src);
+		    break;
+		}
+
+		edge next = single_edge (q->preds);
+		if (next->flags & flag)
+		    queue.safe_push (next->src);
+	    }
+
+	    while (!queue.is_empty ())
+	    {
+		basic_block q = queue.pop ();
+		const int i = index_of (q, blocks, nblocks);
+		if (i == -1)
+		    continue;
+
+		for (edge e : q->preds)
+		    if (e->flags & oflag)
+			queue.safe_push (e->src);
+
+		masks[m] |= gcov_type_unsigned (1) << i;
+	    }
+
+	    //for (int i = 0; i < i2; i++)
+	    //{
+	    //    const char *s = (paths[i1*nblocks + i] & flag) ? "yes" : "no";
+	    //    const char *f = flag != EDGE_TRUE_VALUE ? "t" : "f";
+	    //    printf ("checking if %d masks %d (%s): %s\n",
+	    //    	i2, i, f, s);
+
+	    //    if (paths[i1*nblocks + i] & flag)
+	    //        masks[m] |= gcov_type_unsigned (1) << i;
+	    //}
+
+	    //printf ("%d would mask up-to %d\n", i1, i2);
 	}
     }
+
+    //for (int i1 = 0; i1 < nblocks; i1++)
+    ////for (int i2 = 0; i2 < nblocks; i2++)
+    //for (int i3 = 0; i3 < nblocks; i3++)
+    //{
+    //    if (i1 == i3)
+    //        continue;
+
+    //    //if (i1 == i2 || i1 == i3 || i2 == i3)
+    //    //    continue;
+
+    //    basic_block b1 = blocks[i1];
+    //    //basic_block b2 = blocks[i2];
+    //    basic_block b3 = blocks[i3];
+    //    for (int k = 0; k < 2; k++)
+    //    {
+    //        const edge e = find_edge (b3, b1);
+    //        if (!e)
+    //    	continue;
+    //        if (!(e->flags & flags[k]))
+    //    	continue;
+
+    //        for (edge p : b1->preds)
+    //        {
+    //    	if (p == e)
+    //    	    continue;
+
+    //    	const int i2 = index_of (p->src, blocks, nblocks);
+    //    	if (i1 == -1)
+    //    	    continue;
+
+    //    	if (!(ancestors[i2*nblocks + i3] & 1))
+    //    	    continue;
+
+    //    	const int m = 2*i2 + k;
+    //    	for (int i = i2 + 1; i < i3; i++)
+    //    	{
+    //    	    if (ancestors[i2*nblocks + i] & 1)
+    //    		masks[m] |= gcov_type_unsigned (1) << i;
+    //    	}
+    //        }
+
+    //        continue;
+
+
+
+    //        /* sanity check - (at least) one of the edges in the triangle must
+    //           be direct */
+    //        // const edge e2 = find_edge (b2, b1);
+    //        // const edge e3 = find_edge (b3, b1);
+    //        // const bool direct2 = e2 && e2->flags & flags[k];
+    //        // const bool direct3 = e3 && e3->flags & flags[k];
+    //        // if (!direct2 && !direct3)
+    //        //     continue;
+
+    //        // if (!(paths[i1*nblocks + i2] & flags[k]))     continue;
+    //        // if (!(paths[i1*nblocks + i3] & flags[k]))     continue;
+    //        // if (!(paths[i2*nblocks + i3] & flags[k + 1])) continue;
+
+    //        // // i1 = sink
+    //        // // i2 = bot
+    //        // // i3 = top
+
+    //        // const int index = i3;
+    //        // const int m = 2*i2 + k;
+    //        // masks[m] |= gcov_type_unsigned (1) << index;
+    //    }
+    //}
+
+    for (int i = 0; i < nblocks; i++)
+    {
+	printf("%d (t): ", i);
+	for (int k = 0; k < 64; k++)
+	    if ((masks[2*i + 0]) & (gcov_type_unsigned (1) << k))
+		printf("%d ", k);
+	printf("\n");
+
+	printf("%d (f): ", i);
+	for (int k = 0; k < 64; k++)
+	    if ((masks[2*i + 1]) & (gcov_type_unsigned (1) << k))
+		printf("%d ", k);
+	printf("\n");
+    }
+
+    printf ("\n");
 }
 
 int
