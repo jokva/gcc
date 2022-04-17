@@ -283,157 +283,54 @@ is_conditional_p (const basic_block b)
     return t && f;
 }
 
-/* Determine if there is a path between two nodes where all edges have the same
-   label (true or false).
-
-   Computing the mask requires knowing if there is a path between the node
-   pairs {AB, AC} where all edges in the path have a specific flag. This is an
-   optimization, as paths could be computed on the fly, but that would throw
-   away common sub paths.
-
-   It returns a flattened NxN matrix where N is the number of terms in the
-   expression. map[i*N + k] & EDGE_TRUE_VALUE if following block[k]'s TRUE
-   edges eventually lead to block[i]. The expression (a && (b || c) && d)
-   yields this table:
-
-        0    1    2    3    4    5
-   0: [  ] [  ] [  ] [  ] [  ] [  ]
-   1: [t ] [  ] [  ] [  ] [  ] [  ]
-   2: [  ] [ f] [  ] [  ] [  ] [  ]
-   3: [t ] [t ] [t ] [  ] [  ] [  ]
-   4: [t ] [t ] [t ] [t ] [  ] [  ]
-   5: [ f] [ f] [ f] [ f] [  ] [  ]
-
-   (4,0) = t means you can reach d (= 0) from a following only true edges.
- */
+/* Do a (upwards) search for reachable nodes and mark them in the reachable
+   set, making sure not to take loop edges.  dfs_enumerate_from () won't work as
+   the filter function needs information from the edge. */
 void
-fill (auto_vec< unsigned >& map, const basic_block *blocks, int nblocks,
-      int index, unsigned int flag)
+find_reachable (
+    sbitmap reachable,
+    basic_block pre,
+    basic_block post,
+    basic_block *stack)
 {
-    const int f = flag == EDGE_FALSE_VALUE;
-    const unsigned int mark = LAST_CFG_EDGE_FLAG << (1 + f);
-    if (map[index * nblocks] & mark)
-	return;
-
-    map[index * nblocks] |= mark;
-    for (edge e : blocks[index]->preds)
+    stack[0] = pre;
+    bitmap_set_bit (reachable, pre->index);
+    bitmap_set_bit (reachable, post->index);
+    for (int n = 0; n >= 0; n--)
     {
-	e = contract_edge_up (e, NULL);
-	const int ei = index_of (e->src, blocks, nblocks);
-	if (ei == -1)
-	    continue;
-
-	fill (map, blocks, nblocks, ei, flag);
-	if (e->flags & flag)
+	for (edge e : stack[n]->preds)
 	{
-	    map[index*nblocks + ei] |= flag;
-	    for (int i = 0; i < ei; i++)
-		map[index*nblocks + i] |= (map[ei * nblocks + i] & flag);
+	    if (bitmap_bit_p (reachable, e->src->index))
+		continue;
+
+	    /* Ignore any loop edges.  */
+	    if (dominated_by_p (CDI_DOMINATORS, e->src, e->dest))
+		continue;
+
+	    basic_block src = contract_edge_up (e, reachable)->src;
+	    bitmap_set_bit (reachable, src->index);
+	    stack[n++] = src;
 	}
     }
 }
 
-auto_vec< unsigned >
-fill (const basic_block* blocks, int nblocks)
+basic_block
+follow_flag (basic_block b, unsigned flag)
 {
-    auto_vec< unsigned > map;
-    map.safe_grow_cleared (nblocks * nblocks);
-    for (int i = 0; i < nblocks; i++)
+    while (true)
     {
-	fill (map, blocks, nblocks, i, EDGE_TRUE_VALUE);
-	fill (map, blocks, nblocks, i, EDGE_FALSE_VALUE);
-    }
-    return map;
-}
+	if (!single (b->preds))
+	    return b;
+	edge e = contract_edge_up (single_edge (b->preds), NULL);
+	if (!(e->flags & flag))
+	    return b;
 
-void
-fillancestors (auto_vec< unsigned >& map, const basic_block *blocks,
-	int nblocks, int index)
-{
-    const unsigned int mark = LAST_CFG_EDGE_FLAG << 1;
-    if (map[index * nblocks] & mark)
-	return;
-
-    map[index * nblocks] |= mark;
-    for (edge e : blocks[index]->preds)
-    {
-	e = contract_edge_up (e, NULL);
-	const int pred = index_of (e->src, blocks, nblocks);
-	if (pred == -1)
-	    continue;
-
-	fillancestors (map, blocks, nblocks, pred);
-	map[index*nblocks + pred] |= 1;
-	for (int i = 0; i < pred; i++)
-	    map[index*nblocks + i] |= (map[pred*nblocks + i] & 1);
+	b = e->src;
     }
 }
 
-auto_vec< unsigned >
-fillancestors (const basic_block* blocks, int nblocks)
-{
-    auto_vec< unsigned > map;
-    map.safe_grow_cleared (nblocks * nblocks);
-    for (int i = 0; i < nblocks; i++)
-	fillancestors (map, blocks, nblocks, i);
-    return map;
-}
 
-
-/* Scan the blocks that make up an expression and look for conditions that
-   would mask other conditions.  For a deeper discussion on masking, see
-   Whalen, Heimdahl, De Silva "Efficient Test Coverage Measurement for MC/DC".
-   Masking is best illustrated with an example:
-
-   A || B.  If B is true then A will does not independently affect the decision.
-   In a way, this is "reverse" short circuiting, and always work on the
-   right-hand side of expressions.  * || true is always true and * && false is
-   always false - the left-hand-side does not affect the outcome, and their
-   values should not contribute to modifidied condition/decision coverage.
-
-   A || B interpreted as a decision diagram becomes:
-
-    A
-   t|\f
-    | \
-    |  B
-    |t/ \f
-    |/   \
-    T     F
-
-   The algorithm looks for triangles like ATB.  Masking right-hand sides happen
-   when a block has a pair of incoming edges of the same boolean value, and
-   there is an edge connecting the two predecessors with the *opposite* boolean
-   value.  The masking block is B, and the masked block is A.  In this
-   particular example:
-
-   Masking can affect "outside" its own subexpression; in A || (B && C) if C is
-   false, B is masked.  However, if (B && C) is true, A gets masked.  B && C
-   can be determined from evaluating C since !B would short-circuit, so a true
-   C would mask A.
-
-    A
-   t|\f
-    | \
-    |  \
-    |   \
-    |    B
-    |  t/ \f
-    |  C   |
-    |t/ \f |
-    |/   \ |
-    T     F
-
-   Notice how BFC forms a triangle.  Expressions masked by an edge are
-   determined by:
-
-   * Go to the predecessor with truth value b (if it exists).
-
-TODO: write
-
-   The mask is output as a bit-set stored in a gcov_type_unsigned.  The
-   bit-sets are output in pairs, one for each decision (the outcome of the
-   boolean expression, or which arc to take in the CFG).
+/* TODO: Document this
  */
 
 void
@@ -442,13 +339,13 @@ find_subexpr_masks (
     int nblocks,
     gcov_type_unsigned *masks)
 {
-    const auto paths = fill (blocks, nblocks);
-    const auto ancestors = fillancestors (blocks, nblocks);
     const unsigned flags[] = {
 	EDGE_TRUE_VALUE,
 	EDGE_FALSE_VALUE,
-	//EDGE_TRUE_VALUE,
     };
+
+    auto_vec<basic_block, 32> stack;
+    stack.safe_grow_cleared (nblocks);
 
     for (int i = 0; i < nblocks; i++)
     {
@@ -457,6 +354,8 @@ find_subexpr_masks (
 	for (edge e1 : b->preds)
 	for (edge e2 : b->preds)
 	{
+	    e1 = contract_edge_up (e1, NULL);
+	    e2 = contract_edge_up (e2, NULL);
 	    if (e1 == e2)
 		continue;
 	    if (!(e1->flags & e2->flags & flag))
@@ -466,151 +365,28 @@ find_subexpr_masks (
 	    const int i2 = index_of (e2->src, blocks, nblocks);
 	    if (i1 == -1 || i2 == -1)
 		continue;
-
 	    if (i1 > i2)
 		continue;
 
-	    printf ("\tmasking %d .. %d (from %d)\n", i1, i2, i);
+	    basic_block top = follow_flag (e1->src, flag);
+	    basic_block bot = follow_flag (e2->src, flag);
 
-	    /* direct masks */
 	    const int m = i2*2 + !!(flag == EDGE_FALSE_VALUE);
-	    masks[m] |= gcov_type_unsigned (1) << i1;
-
-	    auto_vec< basic_block, 32 > queue;
-	    queue.safe_push (e2->src);
-
-	    const unsigned oflag = flag == EDGE_TRUE_VALUE ? EDGE_FALSE_VALUE : EDGE_TRUE_VALUE;
-	    /* push the subexpression upwards */
-	    while (!queue.is_empty ())
+	    stack.truncate (0);
+	    stack.safe_push (bot);
+	    while (!stack.is_empty ())
 	    {
-		basic_block q = queue.pop ();
-		if (!single (q->preds))
-		{
-		    queue.truncate (0);
-		    for (edge e : q->preds)
-			if (e->flags & oflag)
-			    queue.safe_push (e->src);
-		    break;
-		}
-
-		edge next = single_edge (q->preds);
-		if (next->flags & flag)
-		    queue.safe_push (next->src);
-	    }
-
-	    while (!queue.is_empty ())
-	    {
-		basic_block q = queue.pop ();
-		const int i = index_of (q, blocks, nblocks);
-		if (i == -1)
+		basic_block q = stack.pop ();
+		const int index = index_of (q, blocks, nblocks);
+		masks[m] |= gcov_type_unsigned (1) << index;
+		if (q == top)
 		    continue;
-
 		for (edge e : q->preds)
-		    if (e->flags & oflag)
-			queue.safe_push (e->src);
-
-		masks[m] |= gcov_type_unsigned (1) << i;
+		    stack.safe_push (contract_edge_up (e, NULL)->src);
 	    }
-
-	    //for (int i = 0; i < i2; i++)
-	    //{
-	    //    const char *s = (paths[i1*nblocks + i] & flag) ? "yes" : "no";
-	    //    const char *f = flag != EDGE_TRUE_VALUE ? "t" : "f";
-	    //    printf ("checking if %d masks %d (%s): %s\n",
-	    //    	i2, i, f, s);
-
-	    //    if (paths[i1*nblocks + i] & flag)
-	    //        masks[m] |= gcov_type_unsigned (1) << i;
-	    //}
-
-	    //printf ("%d would mask up-to %d\n", i1, i2);
+	    masks[m] &= ~(gcov_type_unsigned (1) << index_of (bot, blocks, nblocks));
 	}
     }
-
-    //for (int i1 = 0; i1 < nblocks; i1++)
-    ////for (int i2 = 0; i2 < nblocks; i2++)
-    //for (int i3 = 0; i3 < nblocks; i3++)
-    //{
-    //    if (i1 == i3)
-    //        continue;
-
-    //    //if (i1 == i2 || i1 == i3 || i2 == i3)
-    //    //    continue;
-
-    //    basic_block b1 = blocks[i1];
-    //    //basic_block b2 = blocks[i2];
-    //    basic_block b3 = blocks[i3];
-    //    for (int k = 0; k < 2; k++)
-    //    {
-    //        const edge e = find_edge (b3, b1);
-    //        if (!e)
-    //    	continue;
-    //        if (!(e->flags & flags[k]))
-    //    	continue;
-
-    //        for (edge p : b1->preds)
-    //        {
-    //    	if (p == e)
-    //    	    continue;
-
-    //    	const int i2 = index_of (p->src, blocks, nblocks);
-    //    	if (i1 == -1)
-    //    	    continue;
-
-    //    	if (!(ancestors[i2*nblocks + i3] & 1))
-    //    	    continue;
-
-    //    	const int m = 2*i2 + k;
-    //    	for (int i = i2 + 1; i < i3; i++)
-    //    	{
-    //    	    if (ancestors[i2*nblocks + i] & 1)
-    //    		masks[m] |= gcov_type_unsigned (1) << i;
-    //    	}
-    //        }
-
-    //        continue;
-
-
-
-    //        /* sanity check - (at least) one of the edges in the triangle must
-    //           be direct */
-    //        // const edge e2 = find_edge (b2, b1);
-    //        // const edge e3 = find_edge (b3, b1);
-    //        // const bool direct2 = e2 && e2->flags & flags[k];
-    //        // const bool direct3 = e3 && e3->flags & flags[k];
-    //        // if (!direct2 && !direct3)
-    //        //     continue;
-
-    //        // if (!(paths[i1*nblocks + i2] & flags[k]))     continue;
-    //        // if (!(paths[i1*nblocks + i3] & flags[k]))     continue;
-    //        // if (!(paths[i2*nblocks + i3] & flags[k + 1])) continue;
-
-    //        // // i1 = sink
-    //        // // i2 = bot
-    //        // // i3 = top
-
-    //        // const int index = i3;
-    //        // const int m = 2*i2 + k;
-    //        // masks[m] |= gcov_type_unsigned (1) << index;
-    //    }
-    //}
-
-    for (int i = 0; i < nblocks; i++)
-    {
-	printf("%d (t): ", i);
-	for (int k = 0; k < 64; k++)
-	    if ((masks[2*i + 0]) & (gcov_type_unsigned (1) << k))
-		printf("%d ", k);
-	printf("\n");
-
-	printf("%d (f): ", i);
-	for (int k = 0; k < 64; k++)
-	    if ((masks[2*i + 1]) & (gcov_type_unsigned (1) << k))
-		printf("%d ", k);
-	printf("\n");
-    }
-
-    printf ("\n");
 }
 
 int
@@ -729,37 +505,6 @@ collect_neighbors (basic_block *blocks, int nblocks, sbitmap reachable)
      E ----> o // predecessor outside [B, e)
  */
 
-/* Do a (upwards) search for reachable nodes and mark them in the reachable
-   set, making sure not to take loop edges.  dfs_enumerate_from () won't work as
-   the filter function needs information from the edge. */
-void
-find_reachable (
-    sbitmap reachable,
-    basic_block pre,
-    basic_block post,
-    basic_block *stack)
-{
-    stack[0] = pre;
-    bitmap_set_bit (reachable, pre->index);
-    bitmap_set_bit (reachable, post->index);
-    for (int n = 0; n >= 0; n--)
-    {
-	for (edge e : stack[n]->preds)
-	{
-	    if (bitmap_bit_p (reachable, e->src->index))
-		continue;
-
-	    /* Ignore any loop edges.  */
-	    if (dominated_by_p (CDI_DOMINATORS, e->src, e->dest))
-		continue;
-
-	    basic_block src = contract_edge_up (e, reachable)->src;
-	    bitmap_set_bit (reachable, src->index);
-	    stack[n++] = src;
-	}
-    }
-}
-
 int
 find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
 {
@@ -771,15 +516,6 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     bitmap_clear (expr);
     bitmap_clear (reachable);
     blocks[0] = pre;
-
-    /* If there is a direct edge to the post dominator then this cannot only be
-       a single-term conditional *unless* it is a loop (in which case the
-       to-post edge is the loop exit edge).
-     */
-    const bool dowhile = !loop_exits_from_bb_p (pre->loop_father, pre);
-    const bool isloop = bb_loop_header_p (pre) && !dowhile;
-    if (find_edge (pre, post) && !isloop)
-        return 1;
 
     const int nblocks = collect_reachable_conditionals
 	(pre, post, blocks, ctx.maxsize, expr);
