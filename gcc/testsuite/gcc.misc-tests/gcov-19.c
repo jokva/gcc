@@ -120,10 +120,24 @@ void mcdc004c (int a)
 }
 
 void mcdc004d (int a, int b, int c) {
+    /* With no else this is interpreted as (a && (b || c)) */
+    if (a)  /* conditions(3/6) true(2) false(1 2)*/
+    {
+	if (b || c)
+	    x = a + b + c;
+    }
+}
+
+void mcdc004e (int a, int b, int c) {
+    /* With the else, this is interpreted as 2 expressions */
     if (a)  /* conditions(2/2) */
     {
 	if (b || c) /* conditions(1/4) true(1) false(0 1) */
 	    x = a + b + c;
+    }
+    else
+    {
+	x = c;
     }
 }
 
@@ -181,6 +195,14 @@ void mcdc006a (int a, int b, int c, int d, int e)
 
 void mcdc006b (int a, int b, int c)
 {
+    if (a) /* conditions(6/6) */
+	if (b)
+	    if (c)
+		x = a + b + c;
+}
+
+void mcdc006c (int a, int b, int c)
+{
     if (a) /* conditions(2/2) */
     {
 	if (b) /*conditions(2/2) */
@@ -190,6 +212,14 @@ void mcdc006b (int a, int b, int c)
 		x = a + b + c;
 	    }
 	}
+	else
+	{
+	    x = b;
+	}
+    }
+    else
+    {
+	x = a;
     }
 }
 
@@ -209,6 +239,8 @@ void mcdc007a (int a, int b, int c, int d)
 	if (d) /* conditions(1/2) true(0) */
 	       /* conditions(end) */
 	    x = 3;
+	else
+	    x = 4;
     }
 }
 
@@ -649,6 +681,9 @@ int main ()
     mcdc004d (0, 0, 0);
     mcdc004d (1, 1, 1);
 
+    mcdc004e (0, 0, 0);
+    mcdc004e (1, 1, 1);
+
     mcdc005a (1, 0, 1);
 
     mcdc005b (1, 1, 0, 0);
@@ -664,6 +699,11 @@ int main ()
     mcdc006b (1, 0, 0);
     mcdc006b (1, 1, 0);
     mcdc006b (1, 1, 1);
+
+    mcdc006c (0, 0, 0);
+    mcdc006c (1, 0, 0);
+    mcdc006c (1, 1, 0);
+    mcdc006c (1, 1, 1);
 
     mcdc007a (0, 0, 0, 0);
     mcdc007a (1, 0, 0, 0);

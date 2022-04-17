@@ -21,7 +21,7 @@ int throws (int) { throw std::runtime_error("exception"); }
 int throw_if (int x)
 {
     if (x) /* conditions(1/2) true(0) */
-        throw std::runtime_error("exception");
+	throw std::runtime_error("exception");
     return x;
 }
 
@@ -34,9 +34,9 @@ void mcdc001a (int a)
     nontrivial_destructor v (a);
 
     if (v.val > 0) /* conditions(2/2) */
-        x = v.val;
+	x = v.val;
     else
-        x = -v.val;
+	x = -v.val;
 }
 
 /* non-trivial destructor in-loop temporary */
@@ -45,10 +45,10 @@ mcdc002a (int a, int b)
 {
     for (int i = 0; i < a; i++) /* conditions(2/2) */
     {
-        nontrivial_destructor tmp (a);
-        if (tmp.val % b) /* conditions(2/2) */
-            return nontrivial_destructor (0);
-        x += i;
+	nontrivial_destructor tmp (a);
+	if (tmp.val % b) /* conditions(2/2) */
+	    return nontrivial_destructor (0);
+	x += i;
     } /* conditions(suppress) */
       /* conditions(end) */
 
@@ -61,16 +61,16 @@ void mcdc003a (int a)
     class C
     {
     public:
-        explicit C (int e) : v (e) {
-            if (e) /* conditions(1/2) false(0) */
-                v = x - e;
-        }
-        int v;
+	explicit C (int e) : v (e) {
+	    if (e) /* conditions(1/2) false(0) */
+		v = x - e;
+	}
+	int v;
     };
 
     C c (a);
     if (c.v > 2) /* conditions(1/2) true(0) */
-        x = c.v + a;
+	x = c.v + a;
 }
 
 /* conditional in destructor */
@@ -96,14 +96,14 @@ void mcdc005a (int a)
 {
     try
     {
-        if (a) /* conditions(1/2) true(0) */
-            x = 2 * identity (a);
-        else
-            x = 1;
+	if (a) /* conditions(1/2) true(0) */
+	    x = 2 * identity (a);
+	else
+	    x = 1;
     }
     catch (...)
     {
-        x = 0;
+	x = 0;
     }
 }
 
@@ -111,23 +111,23 @@ void mcdc005a (int a)
 void mcdc006a (int a) {
     try
     {
-        throws (a);
+	throws (a);
     }
     catch (std::exception&)
     {
-        if (a) /* conditions(1/2) false(0) */
-            x = identity (a);
-        else
-            x = 0;
+	if (a) /* conditions(1/2) false(0) */
+	    x = identity (a);
+	else
+	    x = 0;
     }
 }
 
 void mcdc006b (int a)
 {
     if (a) /* conditions(1/2) true(0) */
-        throws (a);
+	throws (a);
     else
-        x = 1;
+	x = 1;
 }
 
 void mcdc006c (int a) try
@@ -136,7 +136,7 @@ void mcdc006c (int a) try
 }
 catch (...) {
     if (a) /* conditions(2/2) */
-        x = 5;
+	x = 5;
 }
 
 /* temporary with destructor as term */
@@ -148,17 +148,17 @@ void mcdc007a (int a, int b)
 void mcdc007b (int a, int b)
 {
     if (a || throw_if (b)) /* conditions(3/4) true(1) destructor() */
-        x = -1;
+	x = -1;
     else
-        x = 1;
+	x = 1;
 }
 
 void mcdc007c (int a, int b)
 {
     if (throw_if (a) || throw_if (b)) /* conditions(2/4) true(0 1) destructor() */
-        x = -1;
+	x = -1;
     else
-        x = 1;
+	x = 1;
 }
 
 /* destructor with delete */
@@ -171,22 +171,23 @@ void mcdc008a (int a)
         int* ptr = nullptr;
 
         explicit C (int v) : size(v + 5), ptr (new int[size]) /* conditions(suppress) */
-                                                              /* conditions(end) */
+							      /* conditions(end) */
         {
-            for (int i = 0; i < size; i++) /* conditions(2/2) */
-                ptr[i] = i + 1;
+	    for (int i = 0; i < size; i++) /* conditions(2/2) */
+		ptr[i] = i + 1;
         }
         ~C()
         {
-            if (ptr) /* conditions(1/2) false(0) */
-                delete ptr; /* conditions(suppress) */
-                            /* conditions(end) */
-        }
+	    // TODO: gcc inserts if (this) here
+	    if (ptr) /* conditions(1/2) false(0) */
+		delete ptr; /* conditions(suppress) */
+			    /* conditions(end) */
+	}
     };
 
     C c (a);
     if (c.ptr[a + 1]) /* conditions(1/2) false(0) */
-        x = a;
+	x = a;
 }
 
 int
