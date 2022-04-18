@@ -87,34 +87,31 @@ struct conds_ctx
 
     /* The size of the blocks buffer.  This is just bug protection,
        the caller should have allocated enough memory for blocks to never get
-       this many elements.
-       */
+       this many elements. */
     int maxsize;
 
     /* Number of expressions found - this value is the number of entries in the
-       gcov output and the parameter to gcov_counter_alloc ().
-       */
+       gcov output and the parameter to gcov_counter_alloc (). */
     int exprs;
 
     /* Bitmap of the processed blocks - bit n set means basic_block->index has
        been processed as a first-in-expression block.  This effectively stops
-       loop edges from being taken and subgraphs re-processed.
-       */
+       loop edges from being taken and subgraphs re-processed. */
     auto_sbitmap seen;
 
     /* Pre-allocate bitmaps for per-function book keeping.  This is pure
-       instance reuse and the bitmaps carries no data between function calls.
-       */
+       instance reuse and the bitmaps carries no data between function calls. */
     auto_sbitmap expr;
-    auto_sbitmap reachable;
+    auto_sbitmap G1;
+    auto_sbitmap G2;
 
     explicit conds_ctx (unsigned size) noexcept (true) : maxsize (0), exprs (0),
-    seen (size), expr (size), reachable (size)
+    seen (size), expr (size), G1 (size), G2 (size)
     {
 	bitmap_clear (seen);
     }
 
-    void commit (basic_block top, int nblocks) noexcept (true)
+    void commit (int nblocks) noexcept (true)
     {
 	blocks  += nblocks;
 	*sizes  += nblocks;
@@ -123,8 +120,13 @@ struct conds_ctx
 	exprs++;
 	sizes++;
 	*sizes = 0;
+    }
 
-	bitmap_set_bit (seen, top->index);
+    /* Mark a node as processed so nodes are not processed twice for example in
+     * loops, gotos. */
+    void mark (basic_block b) noexcept (true)
+    {
+	bitmap_set_bit (seen, b->index);
     }
 };
 
@@ -154,6 +156,7 @@ index_of (const_basic_block needle, const const_basic_block *blocks, int size)
     return -1;
 }
 
+/* Compare block indices, function for using with std::sort */
 bool
 index_lt (const basic_block x, const basic_block y)
 {
@@ -224,13 +227,15 @@ single_edge (const vec<edge, va_gc> *edges)
    edge A -> C, without having to construct a new simplified CFG explicitly.
  */
 edge
-contract_edge (edge e, sbitmap expr)
+contract_edge (edge e, basic_block post, sbitmap expr)
 {
     while (true)
     {
 	basic_block src  = e->src;
 	basic_block dest = e->dest;
 
+	if (dest == post)
+	    return e;
 	if (!single (dest->succs))
 	    return e;
 	if (!single (dest->preds))
@@ -267,6 +272,8 @@ contract_edge_up (edge e, sbitmap expr)
     }
 }
 
+/* Returns true if this is a conditional node, i.e. it has outgoing true &
+   false edges. */
 bool
 is_conditional_p (const basic_block b)
 {
@@ -283,11 +290,11 @@ is_conditional_p (const basic_block b)
     return t && f;
 }
 
-/* Do a (upwards) search for reachable nodes and mark them in the reachable
-   set, making sure not to take loop edges.  dfs_enumerate_from () won't work as
-   the filter function needs information from the edge. */
+/* Scan upwards and find the ancestors of a node, stopping at post.
+   dfs_enumerate_from () won't work as the filter function needs edge
+   information. */
 void
-find_reachable (
+scan_up (
     sbitmap reachable,
     basic_block pre,
     basic_block post,
@@ -296,6 +303,8 @@ find_reachable (
     stack[0] = pre;
     bitmap_set_bit (reachable, pre->index);
     bitmap_set_bit (reachable, post->index);
+    if (pre == post)
+	return;
     for (int n = 0; n >= 0; n--)
     {
 	for (edge e : stack[n]->preds)
@@ -314,6 +323,7 @@ find_reachable (
     }
 }
 
+/* TODO: */
 basic_block
 follow_flag (basic_block b, unsigned flag)
 {
@@ -330,9 +340,7 @@ follow_flag (basic_block b, unsigned flag)
 }
 
 
-/* TODO: Document this
- */
-
+/* TODO: */
 void
 find_subexpr_masks (
     const basic_block *blocks,
@@ -390,12 +398,8 @@ find_subexpr_masks (
 }
 
 int
-collect_reachable_conditionals (
-    basic_block pre,
-    basic_block post,
-    basic_block *out,
-    int maxsize,
-    sbitmap expr)
+scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
+	   sbitmap expr)
 {
     gcc_assert (maxsize > 0);
 
@@ -410,9 +414,11 @@ collect_reachable_conditionals (
 
 	for (edge e : block->succs)
 	{
-	    basic_block dest = contract_edge (e, expr)->dest;
+	    basic_block dest = contract_edge (e, post, expr)->dest;
 
 	    /* Skip loop edges, as they go outside the expression.  */
+	    // TODO: this can probably be removed with some other loop-escape
+	    // adjustments (in ancestor search?)
 	    if (dest == loop)
 		continue;
 	    if (dest == post)
@@ -433,8 +439,10 @@ collect_reachable_conditionals (
     return n;
 }
 
+/* Find the neighborhood of the graph G = [blocks, blocks+n), the
+   destination-nodes from G that are not also in G. */
 int
-collect_neighbors (basic_block *blocks, int nblocks, sbitmap reachable)
+neighborhood (basic_block *blocks, int nblocks, sbitmap reachable)
 {
     int n = 0;
     basic_block *exits = blocks + nblocks;
@@ -445,136 +453,61 @@ collect_neighbors (basic_block *blocks, int nblocks, sbitmap reachable)
 	    if (bitmap_bit_p (reachable, e->dest->index))
 		continue;
 
-            // hacky loop check
-            // but should maybe apply to got as well
-            if (e->dest->index < e->src->index)
-                continue;
+	    // hacky loop check
+	    // but should maybe apply to got as well
+	    // this is maybe unnecessary now?
+	    if (e->dest->index < e->src->index)
+		continue;
 
 	    bitmap_set_bit (reachable, e->dest->index);
 	    exits[n++] = e->dest;
 	}
     }
-
     return n;
 }
 
 /* Find and isolate the first expression between two dominators.
 
-   Either block of a conditional could have more decisions and loops, so
-   isolate the first decision by set-intersecting all paths from the
-   post-dominator to the entry block.
-
-   The function returns the number of blocks from n that make up the leading
-   expression in prefix order (i.e. the order expected by the instrumenting
-   code).  When this function returns 0 there are no decisions between pre and
-   post, and this segment of the CFG can safely be skipped.
-
-   The post nodes can have predecessors that do not belong to this subgraph,
-   which are skipped.  This is expected, for example when there is a
-   conditional in the else-block of a larger expression:
-
-   if (A)
-   {
-      if (B) {}
-   }
-   else
-   {
-      if (C) {} else {}
-   }
-
-             A
-          t / \ f
-           /   \
-          B     C
-         /\    / \
-        /  \  T   F
-       T    \  \ /
-        \   |   o
-         \  |  /
-          \ | /
-           \|/
-            E
-
-   Processing [B, E) which looks like:
-
-      B
-     /|
-    / |
-   T  |
-    \ /
-     E ----> o // predecessor outside [B, e)
- */
-
+   Make a cut C = (G, G') by following all condition edges from pre and find
+   the neighborhood of G.  The first conditional expression is made up of the
+   intersection of ancestors of every node in the neighborhood. */
 int
 find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
 {
     basic_block *blocks = ctx.blocks;
     sbitmap expr = ctx.expr;
-    sbitmap reachable = ctx.reachable;
-    auto_sbitmap exists (SBITMAP_SIZE (expr));
-    bitmap_clear (exists);
+    sbitmap reachable = ctx.G1;
+    sbitmap ancestors = ctx.G2;
     bitmap_clear (expr);
-    bitmap_clear (reachable);
-    blocks[0] = pre;
 
-    const int nblocks = collect_reachable_conditionals
-	(pre, post, blocks, ctx.maxsize, expr);
+    const int nblocks = scan_down (pre, post, blocks, ctx.maxsize, expr);
     if (nblocks == 1)
 	return nblocks;
 
-    //printf("G: ");
-    //for (int i = 0; i < nblocks; i++)
-    //        printf("%d ", blocks[i]->index);
-    //printf("\n");
-
     bitmap_copy (reachable, expr);
-    bitmap_copy (exists,    expr);
-    const int nexits = collect_neighbors (blocks, nblocks, reachable);
+    const int nsize = neighborhood (blocks, nblocks, reachable);
 
-    //printf("N(G): ");
-    //for (int i = 0; i < nexits; i++)
-    //        printf("%d ", blocks[nblocks + i]->index);
-    //printf("\n");
-
-//    if (nexits == 2)
-//	return nblocks;
-
-    /* Find reachable nodes from the neighbors.  */
-    basic_block *exits = blocks + nblocks;
-    for (int i = 0; i < nexits; i++)
+    basic_block *neighborhood = blocks + nblocks;
+    basic_block *stack = neighborhood + nsize;
+    for (int i = 0; i < nsize; i++)
     {
-        //printf ("N = %d\n\t", exits[i]->index);
-	bitmap_clear (reachable);
-	for (edge e : exits[i]->preds)
+	bitmap_clear (ancestors);
+	for (edge e : neighborhood[i]->preds)
 	{
             // skip any edge not spanning the cut
-            if (!bitmap_bit_p (exists, e->src->index))
-                    continue;
-	//    if (!dominated_by_p (CDI_DOMINATORS, e->src, pre))
-	//	continue;
-
-	    find_reachable (reachable, e->src, pre, exits + nexits);
-	//    for (edge f : exits[i]->preds)
-	//	bitmap_set_bit (reachable, f->src->index);
+            if (!bitmap_bit_p (reachable, e->src->index))
+		continue;
+	    scan_up (ancestors, e->src, pre, stack);
 	}
-        //for (int i = 0; i < nblocks; i++)
-        //        if (bitmap_bit_p (reachable, blocks[i]->index))
-        //                printf("%d ", blocks[i]->index);
-        //printf("\n");
-	    bitmap_and (expr, expr, reachable);
+	for (edge f : neighborhood[i]->preds)
+	    bitmap_set_bit (ancestors, f->src->index);
+	bitmap_and (expr, expr, ancestors);
     }
 
     int k = 0;
     for (int i = 0; i < nblocks; i++)
 	if (bitmap_bit_p (expr, blocks[i]->index))
 	    blocks[k++] = blocks[i];
-
-    //printf("E: ");
-    //for (int i = 0; i < k; i++)
-    //        printf("%d ", blocks[i]->index);
-    //printf("\n");
-    //printf("\n");
-
     return k;
 }
 
@@ -585,17 +518,17 @@ emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2,
     tree tmp;
     gassign *read;
     gassign *bitw;
-    gimple  *write;
+    gimple *write;
 
     /* Insert lhs = op1 <bit-op> op2.
 
        The operands are assumed to be local accumulators or already SSA'd (and
        not referencing globals) and don't need atomic reads anymore.
      */
-    tmp   = make_temp_ssa_name (gcov_type_node, NULL, "__conditions_tmp");
-    read  = gimple_build_assign (tmp, op1);
-    tmp   = make_temp_ssa_name (gcov_type_node, NULL, "__conditions_tmp");
-    bitw  = gimple_build_assign (tmp, op, gimple_assign_lhs (read), op2);
+    tmp = make_temp_ssa_name (gcov_type_node, NULL, "__conditions_tmp");
+    read = gimple_build_assign (tmp, op1);
+    tmp = make_temp_ssa_name (gcov_type_node, NULL, "__conditions_tmp");
+    bitw = gimple_build_assign (tmp, op, gimple_assign_lhs (read), op2);
 
     if (atomic)
     {
@@ -606,8 +539,8 @@ emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2,
 		: BUILT_IN_ATOMIC_STORE_4);
 
 	// __atomic_store_8 (&lhs, (op1 | op2), __ATOMIC_RELAXED)
-	write = gimple_build_call
-	    (store, 3, build_addr (lhs), gimple_assign_lhs (bitw), relaxed);
+	write = gimple_build_call (store, 3, build_addr (lhs),
+				   gimple_assign_lhs (bitw), relaxed);
     }
     else
     {
@@ -658,7 +591,7 @@ collect_conditions (conds_ctx& ctx, basic_block entry, basic_block exit)
 	if (bitmap_bit_p (ctx.seen, pre->index))
 	    break;
 
-	bitmap_set_bit (ctx.seen, pre->index);
+	ctx.mark (pre);
 	post = get_immediate_dominator (CDI_POST_DOMINATORS, pre);
 	if (!is_conditional_p (pre))
 	{
@@ -675,14 +608,14 @@ collect_conditions (conds_ctx& ctx, basic_block entry, basic_block exit)
 	    for (edge e : last->succs)
 		if (e->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE))
 		    ctx.blocks[nterms++] = e->dest;
-	    ctx.commit (pre, nterms);
+	    ctx.commit (nterms);
 	}
 	else
 	{
 	    location_t loc = gimple_location (gsi_stmt (gsi_last_bb (pre)));
-	    warning_at
-		(loc, OPT_Wcoverage_too_many_conditions,
-		 "Too many conditions (found %d); giving up coverage", nterms);
+	    warning_at (loc, OPT_Wcoverage_too_many_conditions,
+			"Too many conditions (found %d); giving up coverage",
+			nterms);
 	}
 
 	for (edge e : last->succs)
@@ -698,10 +631,10 @@ collect_conditions (conds_ctx& ctx, basic_block entry, basic_block exit)
    ---------
    Whalen, Heimdahl, De Silva in "Efficient Test Coverage Measurement for
    MC/DC" describe an algorithm for modified condition/decision coverage based
-   on AST analysis.  This algorithm analyses the control flow graph, but the
-   accumulation and recording of (partial) results is inspired by their work.
-   The individual phases are described in more detail closer to the
-   implementation.
+   on AST analysis.  This algorithm analyses the control flow graph to analyze
+   expressions and compute masking vectors, but is inspired by their marking
+   functions for recording outcomes.  The individual phases are described in
+   more detail closer to the implementation.
 
    The CFG is broken up into segments between dominators.  This isn't strictly
    necessary, but since boolean expressions cannot cross dominators it makes
@@ -806,12 +739,10 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
 {
     /* Insert function-local accumulators per decision.  */
     tree accu[2] = {
-	build_decl
-	    (UNKNOWN_LOCATION, VAR_DECL,
-	     get_identifier ("__conditions_accu_true"), gcov_type_node),
-	build_decl
-	    (UNKNOWN_LOCATION, VAR_DECL,
-	     get_identifier ("__conditions_accu_false"), gcov_type_node),
+	build_decl (UNKNOWN_LOCATION, VAR_DECL,
+		    get_identifier ("__conditions_accu_t"), gcov_type_node),
+	build_decl (UNKNOWN_LOCATION, VAR_DECL,
+		    get_identifier ("__conditions_accu_f"), gcov_type_node),
     };
     for (tree acc : accu)
     {
@@ -853,36 +784,37 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
     }
 
     /* Add instructions for updating the global accumulators.  */
+    // TODO: unhandled exceptions don't take EXIT edge, should maybe instrument there too
     basic_block exit = EXIT_BLOCK_PTR_FOR_FN (cfun);
     for (edge e : exit->preds)
     {
 	for (int k = 0; k < 2; k++)
 	{
-	    tree ref = tree_coverage_counter_ref
-		(GCOV_COUNTER_CONDS, 2*condno + k);
+	    tree ref = tree_coverage_counter_ref (GCOV_COUNTER_CONDS,
+						  2*condno + k);
 
-	    tree tmp = make_temp_ssa_name
-		(gcov_type_node, NULL, "__conditions_tmp");
+	    tree tmp = make_temp_ssa_name (gcov_type_node, NULL,
+					   "__conditions_tmp");
 
 	    const bool atomic = flag_profile_update == PROFILE_UPDATE_ATOMIC;
 	    if (atomic)
 	    {
-		tree relaxed = build_int_cst
-		    (integer_type_node, MEMMODEL_RELAXED);
+		tree relaxed = build_int_cst (integer_type_node,
+					      MEMMODEL_RELAXED);
 		tree atomic_load = builtin_decl_explicit
 		    (TYPE_PRECISION (gcov_type_node) > 32
 		     ? BUILT_IN_ATOMIC_LOAD_8
 		     : BUILT_IN_ATOMIC_LOAD_4);
 
 		tree lhs_type = TREE_TYPE (TREE_TYPE (atomic_load));
-		tree lhs = make_temp_ssa_name
-		    (lhs_type, NULL, "__conditions_load_lhs");
+		tree lhs = make_temp_ssa_name (lhs_type, NULL,
+					       "__conditions_load_lhs");
 
-		gcall *load = gimple_build_call
-		    (atomic_load, 2, build_addr (ref), relaxed);
+		gcall *load = gimple_build_call (atomic_load, 2,
+						 build_addr (ref), relaxed);
 		gimple_set_lhs (load, lhs);
-		gassign *assign = gimple_build_assign
-		    (tmp, NOP_EXPR, gimple_call_lhs (load));
+		gassign *assign = gimple_build_assign (tmp, NOP_EXPR,
+						       gimple_call_lhs (load));
 
 		gsi_insert_on_edge (e, load);
 		gsi_insert_on_edge (e, assign);
