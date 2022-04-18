@@ -21,6 +21,7 @@ int throws (int) { throw std::runtime_error("exception"); }
 int throw_if (int x)
 {
     if (x) /* conditions(1/2) true(0) */
+	   /* conditions(end) */
 	throw std::runtime_error("exception");
     return x;
 }
@@ -70,6 +71,7 @@ void mcdc003a (int a)
 
     C c (a);
     if (c.v > 2) /* conditions(1/2) true(0) */
+		 /* conditions(end) */
 	x = c.v + a;
 }
 
@@ -79,12 +81,13 @@ void mcdc004a (int a)
     class C
     {
     public:
-        explicit C (int e) : v (e) {}
-        ~C () {
-            if (v) /* conditions(2/2) */
-                x = 2 * v;
-        }
-        int v;
+	explicit C (int e) : v (e) {}
+	~C ()
+	{
+	    if (v) /* conditions(2/2) */
+		x = 2 * v;
+	}
+	int v;
     };
 
     C c (a);
@@ -97,6 +100,7 @@ void mcdc005a (int a)
     try
     {
 	if (a) /* conditions(1/2) true(0) */
+	       /* conditions(end) */
 	    x = 2 * identity (a);
 	else
 	    x = 1;
@@ -116,6 +120,7 @@ void mcdc006a (int a) {
     catch (std::exception&)
     {
 	if (a) /* conditions(1/2) false(0) */
+	       /* conditions(end) */
 	    x = identity (a);
 	else
 	    x = 0;
@@ -125,6 +130,7 @@ void mcdc006a (int a) {
 void mcdc006b (int a)
 {
     if (a) /* conditions(1/2) true(0) */
+	   /* conditions(end) */
 	throws (a);
     else
 	x = 1;

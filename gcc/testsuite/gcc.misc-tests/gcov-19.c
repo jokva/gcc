@@ -483,7 +483,8 @@ void mcdc016d (int a, int b)
 /* do-while loops */
 void mcdc017a (int a)
 {
-    do {
+    do
+    {
 	a--;
     } while (a > 0); /* conditions(2/2) */
 }
@@ -492,7 +493,8 @@ void noop () {}
 
 void mcdc017b (int a, int b)
 {
-    do {
+    do
+    {
 	/*
 	 * This call is important; it can add more nodes to the body in the
 	 * CFG, which has changes how close exits and breaks are to the loop
@@ -511,7 +513,8 @@ void mcdc017c (int a, int b)
     int left = 0;
     int right = 0;
     int n = a + b;
-    do {
+    do
+    {
 	if (a) /* conditions(1/2) false(0) */
 	       /* conditions(end) */
 	{
@@ -575,6 +578,22 @@ void mcdc018b (int a, int b, int c) {
 	    n = 0;
 	a = n;
     }
+}
+
+/* Adapted from zlib/compress2 */
+void mcdc018c (int a, int b)
+{
+    int err;
+    do
+    {
+	a = inv (a);
+	err = a;
+    } while (err); /* conditions(1/2) true(0) */
+		   /* conditions(end) */
+
+    a = id (a);
+    if (a) /* conditions(1/2) true(0) */
+	x *= a + 1;
 }
 
 /* too many conditions, coverage gives up */
@@ -792,6 +811,8 @@ int main ()
 
     mcdc018b (1, 0, 0);
     mcdc018b (1, 1, 0);
+
+    mcdc018c (1, 1);
 
     mcdc019a ();
 
