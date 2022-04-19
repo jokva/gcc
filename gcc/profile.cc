@@ -1549,26 +1549,30 @@ branch_prob (bool thunk)
       auto_vec<int> sizes (max_sizes);
       sizes.quick_grow (max_sizes);
 
-      int nconds = find_conditions
-	  (entry, exit, blocks.address (), sizes.address (), max_blocks);
+      int nconds = find_conditions (entry, exit, blocks.address (),
+				    sizes.address (), max_blocks);
       total_num_conds += nconds;
 
-      if (nconds > 0
-	  && coverage_counter_alloc (GCOV_COUNTER_CONDS, 2 * nconds)
-	  && output_to_file)
-	{
-	  gcov_position_t offset = gcov_write_tag (GCOV_TAG_CONDS);
+      if (coverage_counter_alloc (GCOV_COUNTER_CONDS, 2 * nconds))
+      {
+	  gcov_position_t offset {};
+	  if (output_to_file)
+	      offset = gcov_write_tag (GCOV_TAG_CONDS);
 	  for (int i = 0; i < nconds; ++i)
-	    {
-	      int idx = sizes[i];
-	      int len = sizes[i + 1] - idx;
+	  {
+	      const int idx = sizes[i];
+	      const int len = sizes[i + 1] - idx;
 	      basic_block *itr = blocks.address () + idx;
-	      int terms = instrument_decisions (itr, len, i);
-	      gcov_write_unsigned (blocks[idx]->index);
-	      gcov_write_unsigned (terms);
-	    }
-	  gcov_write_length (offset);
-	}
+	      const int terms = instrument_decisions (itr, len, i);
+	      if (output_to_file)
+	      {
+		  gcov_write_unsigned (blocks[idx]->index);
+		  gcov_write_unsigned (terms);
+	      }
+	  }
+	  if (output_to_file)
+	      gcov_write_length (offset);
+      }
     }
 
   /* For each edge not on the spanning tree, add counting code.  */

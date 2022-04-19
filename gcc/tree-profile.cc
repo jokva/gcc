@@ -62,6 +62,8 @@ along with GCC; see the file COPYING3.  If not see
 #include "cfganal.h"
 #include "cfgloop.h"
 
+#include "tree.h"
+
 static GTY(()) tree gcov_type_node;
 static GTY(()) tree tree_interval_profiler_fn;
 static GTY(()) tree tree_pow2_profiler_fn;
@@ -253,12 +255,15 @@ contract_edge (edge e, basic_block post, sbitmap expr)
 }
 
 edge
-contract_edge_up (edge e, sbitmap expr)
+contract_edge_up (edge e, sbitmap expr, basic_block b = NULL)
 {
     while (true)
     {
 	basic_block src  = e->src;
 	basic_block dest = e->dest;
+
+	if (src == b)
+	    return e;
 
 	if (!single (dest->succs))
 	    return e;
@@ -294,11 +299,8 @@ is_conditional_p (const basic_block b)
    dfs_enumerate_from () won't work as the filter function needs edge
    information. */
 void
-scan_up (
-    sbitmap reachable,
-    basic_block pre,
-    basic_block post,
-    basic_block *stack)
+scan_up (sbitmap reachable, basic_block pre, basic_block post, const sbitmap G,
+	 basic_block *stack)
 {
     stack[0] = pre;
     bitmap_set_bit (reachable, pre->index);
@@ -309,14 +311,13 @@ scan_up (
     {
 	for (edge e : stack[n]->preds)
 	{
+	    if (!bitmap_bit_p (G, e->src->index))
+		continue;
+
 	    if (bitmap_bit_p (reachable, e->src->index))
 		continue;
 
-	    /* Ignore any loop edges.  */
-	    if (dominated_by_p (CDI_DOMINATORS, e->src, e->dest))
-		continue;
-
-	    basic_block src = contract_edge_up (e, reachable)->src;
+	    basic_block src = contract_edge_up (e, reachable, post)->src;
 	    bitmap_set_bit (reachable, src->index);
 	    stack[n++] = src;
 	}
@@ -342,7 +343,7 @@ follow_flag (basic_block b, unsigned flag)
 
 /* TODO: */
 void
-find_subexpr_masks (
+masking_vector (
     const basic_block *blocks,
     int nblocks,
     gcov_type_unsigned *masks)
@@ -352,8 +353,10 @@ find_subexpr_masks (
 	EDGE_FALSE_VALUE,
     };
 
-    auto_vec<basic_block, 32> stack;
-    stack.safe_grow_cleared (nblocks);
+    auto_vec<basic_block, 32> queue;
+    queue.safe_grow_cleared (nblocks);
+
+    auto_vec<basic_block, 32> processed;
 
     for (int i = 0; i < nblocks; i++)
     {
@@ -380,17 +383,28 @@ find_subexpr_masks (
 	    basic_block bot = follow_flag (e2->src, flag);
 
 	    const int m = i2*2 + !!(flag == EDGE_FALSE_VALUE);
-	    stack.truncate (0);
-	    stack.safe_push (bot);
-	    while (!stack.is_empty ())
+	    queue.truncate (0);
+	    queue.safe_push (bot);
+	    processed.safe_push (bot);
+	    while (!queue.is_empty ())
 	    {
-		basic_block q = stack.pop ();
+		basic_block q = queue.pop ();
+		//printf ("%d = stack.pop (), top = %d\n", q->index, top->index);
+		//processed.safe_push (q);
 		const int index = index_of (q, blocks, nblocks);
 		masks[m] |= gcov_type_unsigned (1) << index;
 		if (q == top)
 		    continue;
+
 		for (edge e : q->preds)
-		    stack.safe_push (contract_edge_up (e, NULL)->src);
+		{
+		    basic_block src = contract_edge_up (e, NULL, top)->src;
+		    if (!processed.contains (src))
+		    {
+			queue.safe_push (src);
+			processed.safe_push (src);
+		    }
+		}
 	    }
 	    masks[m] &= ~(gcov_type_unsigned (1) << index_of (bot, blocks, nblocks));
 	}
@@ -442,15 +456,15 @@ scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 /* Find the neighborhood of the graph G = [blocks, blocks+n), the
    destination-nodes from G that are not also in G. */
 int
-neighborhood (basic_block *blocks, int nblocks, sbitmap reachable)
+neighborhood (basic_block *blocks, int nblocks, const sbitmap G)
 {
     int n = 0;
-    basic_block *exits = blocks + nblocks;
+    basic_block *out = blocks + nblocks;
     for (int i = 0; i < nblocks; i++)
     {
 	for (edge e : blocks[i]->succs)
 	{
-	    if (bitmap_bit_p (reachable, e->dest->index))
+	    if (bitmap_bit_p (G, e->dest->index))
 		continue;
 
 	    // hacky loop check
@@ -459,8 +473,7 @@ neighborhood (basic_block *blocks, int nblocks, sbitmap reachable)
 	    if (e->dest->index < e->src->index)
 		continue;
 
-	    bitmap_set_bit (reachable, e->dest->index);
-	    exits[n++] = e->dest;
+	    out[n++] = e->dest;
 	}
     }
     return n;
@@ -493,14 +506,7 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     {
 	bitmap_clear (ancestors);
 	for (edge e : neighborhood[i]->preds)
-	{
-            // skip any edge not spanning the cut
-            if (!bitmap_bit_p (reachable, e->src->index))
-		continue;
-	    scan_up (ancestors, e->src, pre, stack);
-	}
-	for (edge f : neighborhood[i]->preds)
-	    bitmap_set_bit (ancestors, f->src->index);
+	    scan_up (ancestors, e->src, pre, reachable, stack);
 	bitmap_and (expr, expr, ancestors);
     }
 
@@ -716,6 +722,13 @@ find_conditions (
     //}
     //printf("}\n");
 
+    //if (DECL_CXX_DESTRUCTOR_P (cfun->decl))
+    //{
+    //    for (edge e : entry->succs)
+    //        if (e->flags & EDGE_TRUE_VALUE)
+    //    	entry = e->dest;
+    //}
+
     conds_ctx ctx (maxsize);
     ctx.blocks = blocks;
     ctx.sizes = sizes + 1;
@@ -737,6 +750,8 @@ find_conditions (
 
 int instrument_decisions (basic_block *blocks, int nblocks, int condno)
 {
+    //printf ("instrumenting (%d, %d)\n", nblocks, condno);
+
     /* Insert function-local accumulators per decision.  */
     tree accu[2] = {
 	build_decl (UNKNOWN_LOCATION, VAR_DECL,
@@ -753,7 +768,7 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
 
     auto_vec<gcov_type_unsigned, 32> masks (nblocks * 2);
     masks.quick_grow_cleared (nblocks * 2);
-    find_subexpr_masks (blocks, nblocks, masks.address ());
+    masking_vector (blocks, nblocks, masks.address ());
 
     /* The true/false target blocks are included in the nblocks set, but
        their outgoing edges should not be instrumented.
