@@ -313,13 +313,11 @@ scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
     {
 	for (edge e : stack[n]->preds)
 	{
-	    if (bitmap_bit_p (ancestors, e->src->index))
-		continue;
-
 	    basic_block src = contract_edge_up (e, post)->src;
+	    if (bitmap_bit_p (ancestors, src->index))
+		continue;
 	    if (!bitmap_bit_p (G, src->index))
 		continue;
-
 	    bitmap_set_bit (ancestors, src->index);
 	    stack[n++] = src;
 	}
@@ -398,7 +396,6 @@ masking_vector (
 		    continue; // TODO: assert?
 
 		masks[m] |= gcov_type_unsigned (1) << index;
-		printf ("    masks[%d] |= %d\n", m, index);
 		if (q == top)
 		    continue;
 
@@ -473,6 +470,7 @@ neighborhood (basic_block *blocks, int nblocks, sbitmap G)
 	    // hacky loop check
 	    // but should maybe apply to got as well
 	    // this is maybe unnecessary now?
+	    // TODO: fix this
 	    if (e->dest->index < e->src->index)
 		continue;
 
@@ -498,29 +496,15 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     bitmap_clear (expr);
     bitmap_clear (reachable);
 
-    printf ("fn: %s\n", current_function_name());
-
     const int nblocks = scan_down (pre, post, blocks, ctx.maxsize, expr);
-
-    printf ("  G: ");
-    for (int i = 0; i < nblocks; i++)
-	printf("%d ", blocks[i]->index);
-    printf ("\n");
-
     if (nblocks == 1)
 	return nblocks;
 
     bitmap_copy (reachable, expr);
     const int nsize = neighborhood (blocks, nblocks, reachable);
     bitmap_copy (reachable, expr);
-
     basic_block *neighborhood = blocks + nblocks;
     basic_block *stack = neighborhood + nsize;
-    printf ("  N: ");
-    for (int i = 0; i < nsize; i++)
-	printf("%d ", neighborhood[i]->index);
-    printf ("\n");
-
     for (int i = 0; i < nsize; i++)
     {
 	bitmap_clear (ancestors);
@@ -533,11 +517,6 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     for (int i = 0; i < nblocks; i++)
 	if (bitmap_bit_p (expr, blocks[i]->index))
 	    blocks[k++] = blocks[i];
-
-    printf ("  B: ");
-    for (int i = 0; i < k; i++)
-	printf("%d ", blocks[i]->index);
-    printf ("\n");
     return k;
 }
 
