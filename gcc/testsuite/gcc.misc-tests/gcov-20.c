@@ -4,13 +4,14 @@
 /* some side effect to stop branches from being pruned */
 int x = 0;
 
-void conditions_atomic001(int a, int b)
+void
+conditions_atomic001 (int a, int b)
 {
-  if (a || b) /* conditions(1/4) true(0) false(0 1) */
-	      /* conditions(end) */
-      x = 1;
-  else
-      x = 2;
+    if (a || b) /* conditions(1/4) true(0) false(0 1) */
+		/* conditions(end) */
+	x = 1;
+    else
+	x = 2;
 }
 
 int main ()
