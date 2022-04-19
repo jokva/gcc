@@ -670,7 +670,7 @@ void mcdc022a (int a, int b)
 	x = i;
 	for (int j = i; j < 5; j++) /* conditions(2/2) */
 	{
-	    if (id (a) || id (b)) /* conditions(2/4) true(0 1) */
+	    if (id (a) || id (b)) /* conditions(3/4) true(0) */
 				  /* conditions(end) */
 		continue;
 	    b = inv(b);

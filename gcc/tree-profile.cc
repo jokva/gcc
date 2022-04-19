@@ -1,4 +1,4 @@
-/* Calculate branch probabilities, and basic block execution counts.
+/* Calculate branch probahilities, and basic block execution counts.
    Copyright (C) 1990-2022 Free Software Foundation, Inc.
    Contributed by James E. Wilson, UC Berkeley/Cygnus Support;
    based on some ideas from Dain Samples of UC Berkeley.
@@ -299,26 +299,29 @@ is_conditional_p (const basic_block b)
    dfs_enumerate_from () won't work as the filter function needs edge
    information. */
 void
-scan_up (sbitmap reachable, basic_block pre, basic_block post, const sbitmap G,
+scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
 	 basic_block *stack)
 {
+    if (!bitmap_bit_p (G, pre->index))
+	return;
+
     stack[0] = pre;
-    bitmap_set_bit (reachable, pre->index);
-    bitmap_set_bit (reachable, post->index);
+    bitmap_set_bit (ancestors, pre->index);
+    bitmap_set_bit (ancestors, post->index);
     if (pre == post)
 	return;
     for (int n = 0; n >= 0; n--)
     {
 	for (edge e : stack[n]->preds)
 	{
-	    if (!bitmap_bit_p (G, e->src->index))
+	    if (bitmap_bit_p (ancestors, e->src->index))
 		continue;
 
-	    if (bitmap_bit_p (reachable, e->src->index))
+	    basic_block src = contract_edge_up (e, NULL, post)->src;
+	    if (!bitmap_bit_p (G, src->index))
 		continue;
 
-	    basic_block src = contract_edge_up (e, reachable, post)->src;
-	    bitmap_set_bit (reachable, src->index);
+	    bitmap_set_bit (ancestors, src->index);
 	    stack[n++] = src;
 	}
     }
@@ -384,15 +387,19 @@ masking_vector (
 
 	    const int m = i2*2 + !!(flag == EDGE_FALSE_VALUE);
 	    queue.truncate (0);
+	    processed.truncate (0);
 	    queue.safe_push (bot);
 	    processed.safe_push (bot);
 	    while (!queue.is_empty ())
 	    {
 		basic_block q = queue.pop ();
-		//printf ("%d = stack.pop (), top = %d\n", q->index, top->index);
-		//processed.safe_push (q);
+		processed.safe_push (q);
 		const int index = index_of (q, blocks, nblocks);
+		if (index == -1)
+		    continue; // TODO: assert?
+
 		masks[m] |= gcov_type_unsigned (1) << index;
+		printf ("    masks[%d] |= %d\n", m, index);
 		if (q == top)
 		    continue;
 
@@ -400,10 +407,7 @@ masking_vector (
 		{
 		    basic_block src = contract_edge_up (e, NULL, top)->src;
 		    if (!processed.contains (src))
-		    {
 			queue.safe_push (src);
-			processed.safe_push (src);
-		    }
 		}
 	    }
 	    masks[m] &= ~(gcov_type_unsigned (1) << index_of (bot, blocks, nblocks));
@@ -456,7 +460,7 @@ scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 /* Find the neighborhood of the graph G = [blocks, blocks+n), the
    destination-nodes from G that are not also in G. */
 int
-neighborhood (basic_block *blocks, int nblocks, const sbitmap G)
+neighborhood (basic_block *blocks, int nblocks, sbitmap G)
 {
     int n = 0;
     basic_block *out = blocks + nblocks;
@@ -473,6 +477,7 @@ neighborhood (basic_block *blocks, int nblocks, const sbitmap G)
 	    if (e->dest->index < e->src->index)
 		continue;
 
+	    bitmap_set_bit (G, e->dest->index);
 	    out[n++] = e->dest;
 	}
     }
@@ -494,14 +499,29 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     bitmap_clear (expr);
     bitmap_clear (reachable);
 
+    printf ("fn: %s\n", current_function_name());
+
     const int nblocks = scan_down (pre, post, blocks, ctx.maxsize, expr);
+
+    printf ("  G: ");
+    for (int i = 0; i < nblocks; i++)
+	printf("%d ", blocks[i]->index);
+    printf ("\n");
+
     if (nblocks == 1)
 	return nblocks;
 
     bitmap_copy (reachable, expr);
-    const int nsize = neighborhood (blocks, nblocks, expr);
+    const int nsize = neighborhood (blocks, nblocks, reachable);
+    bitmap_copy (reachable, expr);
+
     basic_block *neighborhood = blocks + nblocks;
     basic_block *stack = neighborhood + nsize;
+    printf ("  N: ");
+    for (int i = 0; i < nsize; i++)
+	printf("%d ", neighborhood[i]->index);
+    printf ("\n");
+
     for (int i = 0; i < nsize; i++)
     {
 	bitmap_clear (ancestors);
@@ -514,6 +534,11 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     for (int i = 0; i < nblocks; i++)
 	if (bitmap_bit_p (expr, blocks[i]->index))
 	    blocks[k++] = blocks[i];
+
+    printf ("  B: ");
+    for (int i = 0; i < k; i++)
+	printf("%d ", blocks[i]->index);
+    printf ("\n");
     return k;
 }
 
