@@ -255,7 +255,7 @@ contract_edge (edge e, basic_block post, sbitmap expr)
 }
 
 edge
-contract_edge_up (edge e, sbitmap expr, basic_block b = NULL)
+contract_edge_up (edge e, basic_block b = NULL)
 {
     while (true)
     {
@@ -272,7 +272,6 @@ contract_edge_up (edge e, sbitmap expr, basic_block b = NULL)
 	if (!single (src->preds))
 	    return e;
 
-	if (expr) bitmap_set_bit (expr, src->index);
 	e = single_pred_edge (src);
     }
 }
@@ -317,7 +316,7 @@ scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
 	    if (bitmap_bit_p (ancestors, e->src->index))
 		continue;
 
-	    basic_block src = contract_edge_up (e, NULL, post)->src;
+	    basic_block src = contract_edge_up (e, post)->src;
 	    if (!bitmap_bit_p (G, src->index))
 		continue;
 
@@ -335,7 +334,7 @@ follow_flag (basic_block b, unsigned flag)
     {
 	if (!single (b->preds))
 	    return b;
-	edge e = contract_edge_up (single_edge (b->preds), NULL);
+	edge e = contract_edge_up (single_edge (b->preds));
 	if (!(e->flags & flag))
 	    return b;
 
@@ -368,8 +367,8 @@ masking_vector (
 	for (edge e1 : b->preds)
 	for (edge e2 : b->preds)
 	{
-	    e1 = contract_edge_up (e1, NULL);
-	    e2 = contract_edge_up (e2, NULL);
+	    e1 = contract_edge_up (e1);
+	    e2 = contract_edge_up (e2);
 	    if (e1 == e2)
 		continue;
 	    if (!(e1->flags & e2->flags & flag))
@@ -405,7 +404,7 @@ masking_vector (
 
 		for (edge e : q->preds)
 		{
-		    basic_block src = contract_edge_up (e, NULL, top)->src;
+		    basic_block src = contract_edge_up (e, top)->src;
 		    if (!processed.contains (src))
 			queue.safe_push (src);
 		}
