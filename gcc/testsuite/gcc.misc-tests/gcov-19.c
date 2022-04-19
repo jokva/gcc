@@ -252,7 +252,7 @@ void mcdc007b (int a, int b, int c)
     else if (b) /* conditions(2/2) */
 	goto then;
     else if (c) /* conditions(1/2) true(0) */
-	/* conditions(end) */
+		/* conditions(end) */
 	goto then;
 
     return;
@@ -661,7 +661,22 @@ void fun (int a, int b, int c, int d, int e)
     }
 }
 
-/* test with functions as conditionals */
+/* Adapted from linux arch/x86/tools/relocs.c
+   With poor edge contracting this became an infinite loop. */
+void mcdc022a (int a, int b)
+{
+    for (int i = 0; i < 5; i++) /* conditions(2/2) */
+    {
+	x = i;
+	for (int j = i; j < 5; j++) /* conditions(2/2) */
+	{
+	    if (id (a) || id (b)) /* conditions(2/4) true(0 1) */
+				  /* conditions(end) */
+		continue;
+	    b = inv(b);
+	}
+    }
+}
 
 int main ()
 {
@@ -824,6 +839,8 @@ int main ()
 
     mcdc020c (0, 1);
     mcdc020c (1, 1);
+
+    mcdc022a (0, 0);
 
     fun (1, 0, 1, 0, 1);
 }

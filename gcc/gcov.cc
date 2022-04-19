@@ -1188,12 +1188,12 @@ output_intermediate_json_line (json::array *object,
 	const int covered = info.popcount ();
 
 	json::object *cond = new json::object ();
-	cond->set ("count",   new json::integer_number (count));
+	cond->set ("count", new json::integer_number (count));
 	cond->set ("covered", new json::integer_number (covered));
 
 	json::array *mtrue = new json::array ();
 	json::array *mfalse = new json::array ();
-	cond->set ("not_covered_true",  mtrue);
+	cond->set ("not_covered_true", mtrue);
 	cond->set ("not_covered_false", mfalse);
 
 	if (count != covered)

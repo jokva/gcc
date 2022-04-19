@@ -1282,7 +1282,7 @@ static const char *cc1_options =
  %{!fsyntax-only:%{S:%W{o*}%{!o*:-o %w%b.s}}}\
  %{fsyntax-only:-o %j} %{-param*}\
  %{coverage:-fprofile-arcs -ftest-coverage}\
- %{fprofile-arcs|fprofile-generate*|coverage:\
+ %{fprofile-arcs|fprofile-conditions|fprofile-generate*|coverage:\
    %{!fprofile-update=single:\
      %{pthread:-fprofile-update=prefer-atomic}}}";
 

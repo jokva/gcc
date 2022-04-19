@@ -479,14 +479,14 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     sbitmap reachable = ctx.G1;
     sbitmap ancestors = ctx.G2;
     bitmap_clear (expr);
+    bitmap_clear (reachable);
 
     const int nblocks = scan_down (pre, post, blocks, ctx.maxsize, expr);
     if (nblocks == 1)
 	return nblocks;
 
     bitmap_copy (reachable, expr);
-    const int nsize = neighborhood (blocks, nblocks, reachable);
-
+    const int nsize = neighborhood (blocks, nblocks, expr);
     basic_block *neighborhood = blocks + nblocks;
     basic_block *stack = neighborhood + nsize;
     for (int i = 0; i < nsize; i++)
