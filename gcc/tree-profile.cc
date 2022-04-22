@@ -200,6 +200,17 @@ single_edge (const vec<edge, va_gc> *edges)
     gcc_unreachable ();
 }
 
+edge
+edge_with (const vec<edge, va_gc> *edges, unsigned flag)
+{
+    for (edge e : edges)
+    {
+	if (e->flags & flag)
+	    return e;
+    }
+    return NULL;
+}
+
 /* Sometimes, for example with function calls and C++ destructors the CFG gets
    extra nodes that are essentially single-entry-single-exit in the middle of
    boolean expressions.  For example:
@@ -324,22 +335,6 @@ scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
     }
 }
 
-/* TODO: */
-basic_block
-follow_flag (basic_block b, unsigned flag)
-{
-    while (true)
-    {
-	if (!single (b->preds))
-	    return b;
-	edge e = contract_edge_up (single_edge (b->preds));
-	if (!(e->flags & flag))
-	    return b;
-
-	b = e->src;
-    }
-}
-
 
 /* TODO: */
 void
@@ -351,20 +346,20 @@ masking_vector (
     const unsigned flags[] = {
 	EDGE_TRUE_VALUE,
 	EDGE_FALSE_VALUE,
+	EDGE_TRUE_VALUE,
     };
 
     auto_vec<basic_block, 32> queue;
-    queue.safe_grow_cleared (nblocks);
-
-    auto_vec<basic_block, 32> processed;
+    auto_vec<basic_block, 32> masked;
 
     for (int i = 0; i < nblocks; i++)
     {
 	basic_block b = blocks[i];
-	for (unsigned flag : flags)
+	for (int k = 0; k < 2; k++)
 	for (edge e1 : b->preds)
 	for (edge e2 : b->preds)
 	{
+	    const unsigned flag = flags[k];
 	    e1 = contract_edge_up (e1);
 	    e2 = contract_edge_up (e2);
 	    if (e1 == e2)
@@ -379,34 +374,43 @@ masking_vector (
 	    if (i1 > i2)
 		continue;
 
-	    basic_block top = follow_flag (e1->src, flag);
-	    basic_block bot = follow_flag (e2->src, flag);
+	    basic_block top = e1->src;
+	    basic_block bot = e2->src;
+	    edge lime = edge_with (top->succs, flags[k]);
+	    basic_block lim = contract_edge (lime, nullptr, nullptr)->dest;
 
-	    const int m = i2*2 + !!(flag == EDGE_FALSE_VALUE);
+	    masked.truncate (0);
 	    queue.truncate (0);
-	    processed.truncate (0);
-	    queue.safe_push (bot);
-	    processed.safe_push (bot);
+	    queue.safe_push (lim);
+
 	    while (!queue.is_empty ())
 	    {
 		basic_block q = queue.pop ();
-		processed.safe_push (q);
-		const int index = index_of (q, blocks, nblocks);
-		if (index == -1)
-		    continue; // TODO: assert?
-
-		masks[m] |= gcov_type_unsigned (1) << index;
-		if (q == top)
-		    continue;
-
 		for (edge e : q->preds)
 		{
-		    basic_block src = contract_edge_up (e, top)->src;
-		    if (!processed.contains (src))
-			queue.safe_push (src);
+		    e = contract_edge_up (e);
+		    if (e->src->index > bot->index)
+			continue;
+		    if (e->src == bot)
+			continue;
+		    if (masked.contains (e->src))
+			continue;
+		    if (index_of (e->src, blocks, nblocks) == -1)
+			continue;
+
+		    masked.safe_push (e->src);
+		    if (e->src != top)
+			queue.safe_push (e->src);
 		}
 	    }
-	    masks[m] &= ~(gcov_type_unsigned (1) << index_of (bot, blocks, nblocks));
+
+	    const int m = i2*2 + k;
+	    for (basic_block b : masked)
+	    {
+		const int index = index_of (b, blocks, nblocks);
+		gcc_assert (index != -1);
+		masks[m] |= gcov_type_unsigned (1) << index;
+	    }
 	}
     }
 }
@@ -716,22 +720,6 @@ find_conditions (
 	free_dom = true;
     }
 
-    //printf("digraph {\n");
-    //basic_block bb;
-    //FOR_BB_BETWEEN (bb, entry, exit, next_bb) {
-    //    for (auto e : bb->succs) {
-    //            printf ("A%d -> A%d\n", e->src->index, e->dest->index);
-    //    }
-    //}
-    //printf("}\n");
-
-    //if (DECL_CXX_DESTRUCTOR_P (cfun->decl))
-    //{
-    //    for (edge e : entry->succs)
-    //        if (e->flags & EDGE_TRUE_VALUE)
-    //    	entry = e->dest;
-    //}
-
     conds_ctx ctx (maxsize);
     ctx.blocks = blocks;
     ctx.sizes = sizes + 1;
@@ -802,53 +790,52 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
     }
 
     /* Add instructions for updating the global accumulators.  */
-    // TODO: unhandled exceptions don't take EXIT edge, should maybe instrument there too
-    basic_block exit = EXIT_BLOCK_PTR_FOR_FN (cfun);
-    for (edge e : exit->preds)
+    for (int i = nblocks - 2; i < nblocks; i++)
     {
-	for (int k = 0; k < 2; k++)
+	for (edge e : blocks[i]->succs)
 	{
-	    tree ref = tree_coverage_counter_ref (GCOV_COUNTER_CONDS,
-						  2*condno + k);
-
-	    tree tmp = make_temp_ssa_name (gcov_type_node, NULL,
-					   "__conditions_tmp");
-
-	    const bool atomic = flag_profile_update == PROFILE_UPDATE_ATOMIC;
-	    if (atomic)
+	    for (int k = 0; k < 2; k++)
 	    {
-		tree relaxed = build_int_cst (integer_type_node,
-					      MEMMODEL_RELAXED);
-		tree atomic_load = builtin_decl_explicit
-		    (TYPE_PRECISION (gcov_type_node) > 32
-		     ? BUILT_IN_ATOMIC_LOAD_8
-		     : BUILT_IN_ATOMIC_LOAD_4);
+		tree ref = tree_coverage_counter_ref (GCOV_COUNTER_CONDS,
+						    2*condno + k);
 
-		tree lhs_type = TREE_TYPE (TREE_TYPE (atomic_load));
-		tree lhs = make_temp_ssa_name (lhs_type, NULL,
-					       "__conditions_load_lhs");
+		tree tmp = make_temp_ssa_name (gcov_type_node, NULL,
+					    "__conditions_tmp");
 
-		gcall *load = gimple_build_call (atomic_load, 2,
-						 build_addr (ref), relaxed);
-		gimple_set_lhs (load, lhs);
-		gassign *assign = gimple_build_assign (tmp, NOP_EXPR,
-						       gimple_call_lhs (load));
+		const bool atomic = flag_profile_update == PROFILE_UPDATE_ATOMIC;
+		if (atomic)
+		{
+		    tree relaxed = build_int_cst (integer_type_node,
+						MEMMODEL_RELAXED);
+		    tree atomic_load = builtin_decl_explicit
+			(TYPE_PRECISION (gcov_type_node) > 32
+			? BUILT_IN_ATOMIC_LOAD_8
+			: BUILT_IN_ATOMIC_LOAD_4);
 
-		gsi_insert_on_edge (e, load);
-		gsi_insert_on_edge (e, assign);
+		    tree lhs_type = TREE_TYPE (TREE_TYPE (atomic_load));
+		    tree lhs = make_temp_ssa_name (lhs_type, NULL,
+						"__conditions_load_lhs");
+
+		    gcall *load = gimple_build_call (atomic_load, 2,
+						    build_addr (ref), relaxed);
+		    gimple_set_lhs (load, lhs);
+		    gassign *assign = gimple_build_assign (tmp, NOP_EXPR,
+							gimple_call_lhs (load));
+
+		    gsi_insert_on_edge (e, load);
+		    gsi_insert_on_edge (e, assign);
+		}
+		else
+		{
+		    gassign *read = gimple_build_assign (tmp, ref);
+		    tmp = gimple_assign_lhs (read);
+		    gsi_insert_on_edge (e, read);
+		}
+		ref = unshare_expr (ref);
+		emit_bitwise_op (e, ref, accu[k], BIT_IOR_EXPR, tmp, atomic);
 	    }
-	    else
-	    {
-		gassign *read = gimple_build_assign (tmp, ref);
-		tmp = gimple_assign_lhs (read);
-		gsi_insert_on_edge (e, read);
-	    }
-
-	    ref = unshare_expr (ref);
-	    emit_bitwise_op (e, ref, accu[k], BIT_IOR_EXPR, tmp, atomic);
 	}
     }
-
     return nblocks - 2;
 }
 
