@@ -62,7 +62,8 @@ void mcdc003a (int a)
     class C
     {
     public:
-	explicit C (int e) : v (e) {
+	explicit C (int e) : v (e)
+	{
 	    if (e) /* conditions(1/2) false(0) */
 		v = x - e;
 	}
@@ -176,18 +177,17 @@ void mcdc008a (int a)
         int size = 5;
         int* ptr = nullptr;
 
-        explicit C (int v) : size(v + 5), ptr (new int[size]) /* conditions(suppress) */
-							      /* conditions(end) */
+        explicit C (int v) : size (v + 5), ptr (new int[size]) /* conditions(suppress) */
+							       /* conditions(end) */
         {
 	    for (int i = 0; i < size; i++) /* conditions(2/2) */
 		ptr[i] = i + 1;
         }
         ~C()
         {
-	    // TODO: gcc inserts if (this) here
-	    if (ptr) /* conditions(1/2) false(0) */
-		delete ptr; /* conditions(suppress) */
-			    /* conditions(end) */
+	    // delete with implicit nullptr check
+	    delete ptr; /* conditions(1/2) false(0) */
+			/* conditions(end) */
 	}
     };
 
