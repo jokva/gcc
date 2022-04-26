@@ -789,51 +789,57 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
 	}
     }
 
-    /* Add instructions for updating the global accumulators.  */
-    for (int i = nblocks - 2; i < nblocks; i++)
+    const bool atomic = flag_profile_update == PROFILE_UPDATE_ATOMIC;
+    const tree atomic_load = builtin_decl_explicit
+	(TYPE_PRECISION (gcov_type_node) > 32
+	 ? BUILT_IN_ATOMIC_LOAD_8
+	 : BUILT_IN_ATOMIC_LOAD_4);
+
+    /* Add instructions for updating the global accumulators.
+       The two last blocks are the outcome blocks, and we need to flush the
+       accumulators at the end-of-expression. If it is done later then flushes
+       could be lost to exception handling or unexpected termination. */
+    const basic_block outcome_blocks[] = {
+	blocks[nblocks - 2],
+	blocks[nblocks - 2],
+	blocks[nblocks - 1],
+	blocks[nblocks - 1],
+    };
+    const int outcome[] = { 0, 1, 0, 1 };
+
+    for (int i = 0; i < 4; i++)
     {
-	for (edge e : blocks[i]->succs)
+	const int k = outcome[i];
+	for (edge e : outcome_blocks[i]->succs)
 	{
-	    for (int k = 0; k < 2; k++)
+	    tree ref = tree_coverage_counter_ref (GCOV_COUNTER_CONDS,
+		    2*condno + k);
+	    tree tmp = make_temp_ssa_name (gcov_type_node, NULL,
+					   "__conditions_tmp");
+	    if (atomic)
 	    {
-		tree ref = tree_coverage_counter_ref (GCOV_COUNTER_CONDS,
-						    2*condno + k);
+		tree relaxed = build_int_cst (integer_type_node,
+					      MEMMODEL_RELAXED);
+		tree lhs_type = TREE_TYPE (TREE_TYPE (atomic_load));
+		tree lhs = make_temp_ssa_name (lhs_type, NULL,
+					       "__conditions_load_lhs");
 
-		tree tmp = make_temp_ssa_name (gcov_type_node, NULL,
-					    "__conditions_tmp");
-
-		const bool atomic = flag_profile_update == PROFILE_UPDATE_ATOMIC;
-		if (atomic)
-		{
-		    tree relaxed = build_int_cst (integer_type_node,
-						MEMMODEL_RELAXED);
-		    tree atomic_load = builtin_decl_explicit
-			(TYPE_PRECISION (gcov_type_node) > 32
-			? BUILT_IN_ATOMIC_LOAD_8
-			: BUILT_IN_ATOMIC_LOAD_4);
-
-		    tree lhs_type = TREE_TYPE (TREE_TYPE (atomic_load));
-		    tree lhs = make_temp_ssa_name (lhs_type, NULL,
-						"__conditions_load_lhs");
-
-		    gcall *load = gimple_build_call (atomic_load, 2,
-						    build_addr (ref), relaxed);
-		    gimple_set_lhs (load, lhs);
-		    gassign *assign = gimple_build_assign (tmp, NOP_EXPR,
-							gimple_call_lhs (load));
-
-		    gsi_insert_on_edge (e, load);
-		    gsi_insert_on_edge (e, assign);
-		}
-		else
-		{
-		    gassign *read = gimple_build_assign (tmp, ref);
-		    tmp = gimple_assign_lhs (read);
-		    gsi_insert_on_edge (e, read);
-		}
-		ref = unshare_expr (ref);
-		emit_bitwise_op (e, ref, accu[k], BIT_IOR_EXPR, tmp, atomic);
+		gcall *load = gimple_build_call (atomic_load, 2,
+						 build_addr (ref), relaxed);
+		gimple_set_lhs (load, lhs);
+		gassign *assign = gimple_build_assign (tmp, NOP_EXPR,
+						       gimple_call_lhs (load));
+		gsi_insert_on_edge (e, load);
+		gsi_insert_on_edge (e, assign);
 	    }
+	    else
+	    {
+		gassign *read = gimple_build_assign (tmp, ref);
+		tmp = gimple_assign_lhs (read);
+		gsi_insert_on_edge (e, read);
+	    }
+	    ref = unshare_expr (ref);
+	    emit_bitwise_op (e, ref, accu[k], BIT_IOR_EXPR, tmp, atomic);
 	}
     }
     return nblocks - 2;
