@@ -741,8 +741,6 @@ find_conditions (
 
 int instrument_decisions (basic_block *blocks, int nblocks, int condno)
 {
-    //printf ("instrumenting (%d, %d)\n", nblocks, condno);
-
     /* Insert function-local accumulators per decision.  */
     tree accu[2] = {
 	build_decl (UNKNOWN_LOCATION, VAR_DECL,
@@ -795,10 +793,30 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
 	 ? BUILT_IN_ATOMIC_LOAD_8
 	 : BUILT_IN_ATOMIC_LOAD_4);
 
-    /* Add instructions for updating the global accumulators.
+    /* Add instructions for flushing the local accumulators.
        The two last blocks are the outcome blocks, and we need to flush the
        accumulators at the end-of-expression. If it is done later then flushes
-       could be lost to exception handling or unexpected termination. */
+       could be lost to exception handling or unexpected termination.
+
+       It is important that the flushes happen on on the outcome's incoming
+       edges as it might not have outgoing edges:
+
+       void fn (int a)
+       {
+	   if (a)
+	    fclose();
+	   exit();
+       }
+
+       Can yield the CFG:
+       A
+       |\
+       | B
+       |/
+       e
+
+       This typically only happen in optimized builds, but gives linker errors
+       because the counter is left as an undefined symbol. */
     const basic_block outcome_blocks[] = {
 	blocks[nblocks - 2],
 	blocks[nblocks - 2],
@@ -807,13 +825,14 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
     };
     const int outcome[] = { 0, 1, 0, 1 };
 
+    // TODO: ref -> counter
     for (int i = 0; i < 4; i++)
     {
 	const int k = outcome[i];
-	for (edge e : outcome_blocks[i]->succs)
+	for (edge e : outcome_blocks[i]->preds)
 	{
 	    tree ref = tree_coverage_counter_ref (GCOV_COUNTER_CONDS,
-		    2*condno + k);
+						  2*condno + k);
 	    tree tmp = make_temp_ssa_name (gcov_type_node, NULL,
 					   "__conditions_tmp");
 	    if (atomic)
