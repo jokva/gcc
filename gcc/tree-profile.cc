@@ -624,31 +624,19 @@ emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2,
 
 /* Walk the CFG and collect conditionals.
 
-   1. Collect all nodes reachable from the root node through (contracted) paths
-      of true/false edges.
-   2. Collect the neighbors of the reachable node (set).
-   3. From every node in the neighborhood, walk the up the CFG and mark every
-      reachable node.  Only the nodes reachable from *every* node in the
-      neighborhood are a part of the first expression.
-   4. Record the expression plus the two successors of the last (highest-index)
-      node in the expression, i.e. the last term.
-   5. Repeat using the two successors as new root nodes.
+   1. Collect a candidate set G by walking from the root following all
+      (contracted) condition edges.
+   2. This creates a cut C = (G, G'); find the neighborhood N(G).
+   3. For every node in N(G), follow the edges across the cut and collect all
+      ancestors (that are also in G, that is, don't follow edges outside of G).
+   4. The intersection of all these ancestor sets is the boolean expression B
+      that starts in root.
+   5. Repeat using the two outcomes (successors of B) as new root nodes.
 
    It is not guaranteed to find nodes in the order of the expression, i.e. it
    might find (a || b) && c as [a c b], so the output is sorted by
-   basic_block->index.
-
-   Steps 2 and 3 are necessary to distinguish chained conditionals from
-   multi-term conditionals, e.g. to separate
-
-       if (a)
-       {
-           if (b)
-               work ();
-       }
-       if (a && b)
-           work ();
- */
+   basic_block->index.  This assumes A->index < B->index means A is before B in
+   the expression syntactically. */
 void
 collect_conditions (conds_ctx& ctx, basic_block entry, basic_block exit)
 {
