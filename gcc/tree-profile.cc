@@ -113,6 +113,7 @@ struct conds_ctx
 	bitmap_clear (seen);
     }
 
+    /* Commit the buffered (n-2)-term expression including outcome nodes. */
     void commit (int nblocks) noexcept (true)
     {
 	blocks  += nblocks;
@@ -125,7 +126,7 @@ struct conds_ctx
     }
 
     /* Mark a node as processed so nodes are not processed twice for example in
-     * loops, gotos. */
+       loops, gotos. */
     void mark (basic_block b) noexcept (true)
     {
 	bitmap_set_bit (seen, b->index);
@@ -147,6 +148,10 @@ struct conds_ctx
  */
 #define CONDITIONS_MAX_TERMS (sizeof (gcov_type_unsigned) * BITS_PER_UNIT)
 
+/* Find the index of needle in blocks; return -1 if not found. This has two
+   uses, sometimes for the index and sometimes for set member checks.  Sets are
+   typically very small (number of conditions, >8 is uncommon) so linear search
+   should be very fast. */
 int
 index_of (const_basic_block needle, const const_basic_block *blocks, int size)
 {
@@ -237,8 +242,7 @@ edge_with (const vec<edge, va_gc> *edges, unsigned flag)
            F   T
 
    contract_edge ignores the series of intermediate nodes and makes a virtual
-   edge A -> C, without having to construct a new simplified CFG explicitly.
- */
+   edge A -> C, without having to construct a new simplified CFG explicitly. */
 edge
 contract_edge (edge e, basic_block post, sbitmap expr)
 {
@@ -336,7 +340,60 @@ scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
 }
 
 
-/* TODO: */
+/* Compute the masking vector.
+
+   Masking and short circuiting are deeply connected - masking occurs when
+   control flow reaches a state that is also reachable with short circuiting.
+   In fact, masking appears as short circuiting in the reversed expression.
+   This means we can find the limits, the last term in previous subexpressions
+   by following the edges that short circuit to the same outcome.
+
+   First the limit of the expression is found as the other outcome of the
+   source of a short circuit.  The masked nodes are the ancestors of the limit
+   in the CFG where the short circuit and masking nodes are considered without
+   predecessors.  && and || isomorphic by inverting conditions and outcomes and
+   are solved by the same algorithm.  In the example indices [0] and [1] denote
+   boolean values.
+
+   In the simples case a || b:
+
+   a
+   |\
+   | b
+   |/ \
+   T   F
+
+   T has has multiple incoming edges and is the outcome of a short circuit,
+   with top = a, bot = b.  lim = a.succs[0] = b, which has 1 ancestor a and so
+   the masking vector is b[1] = {a}.
+
+   Now consider (a && b) || (c && d) and its masking vectors:
+
+   a
+   |\
+   b \
+   |\ \
+   | \|
+   |  c
+   |  |\
+   |  d \
+   | / \ \
+   |/   \|
+   T     F
+
+   a[0] = {}
+   a[1] = {}
+   b[0] = {a}
+   b[1] = {}
+   c[0] = {}
+   c[1] = {}
+   d[0] = {c}
+   d[1] = {a,b}
+
+   b[0] and d[0] are identical to the a || b example, but d[1].
+   T.preds = {b,d}, top = b, bot = d, and b.succs[0] = c.  ancestors(c) = {a,b}
+   which is d[1] and the search terminates as a.preds is empty and b.preds are
+   discarded. */
 void
 masking_vector (
     const basic_block *blocks,
