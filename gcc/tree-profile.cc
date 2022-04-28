@@ -366,7 +366,7 @@ scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
    are solved by the same algorithm.  In the example indices [0] and [1] denote
    boolean values.
 
-   In the simples case a || b:
+   In the simplest case a || b:
 
    a
    |\
@@ -383,14 +383,12 @@ scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
    a
    |\
    b \
-   |\ \
-   | \|
-   |  c
-   |  |\
-   |  d \
-   | / \ \
-   |/   \|
-   T     F
+   |\|
+   | c
+   | |\
+   | d \
+   |/ \|
+   T   F
 
    a[0] = {}
    a[1] = {}
@@ -428,13 +426,12 @@ masking_vector (
 	for (edge e1 : b->preds)
 	for (edge e2 : b->preds)
 	{
-	    if (e1 == e2)
+	    // Order the sources so that e1 is a term left of e2. This also
+	    // guards against incoming loop edges
+	    if (e1->src->index >= e2->src->index)
 		continue;
 
 	    const unsigned flag = flags[k];
-	    e1 = contract_edge_up (e1, blocks[0]);
-	    e2 = contract_edge_up (e2, blocks[0]);
-
 	    if (!(e1->flags & e2->flags & flag))
 		continue;
 
@@ -442,12 +439,10 @@ masking_vector (
 	    const int i2 = index_of (e2->src, blocks, nblocks);
 	    if (i1 == -1 || i2 == -1)
 		continue;
-	    if (i1 > i2)
-		continue;
 
 	    basic_block top = e1->src;
 	    basic_block bot = e2->src;
-	    edge lime = edge_with (top->succs, flags[k]);
+	    edge lime = edge_with (top->succs, flags[k+1]);
 	    basic_block lim = contract_edge (lime, nullptr, nullptr)->dest;
 
 	    masked.truncate (0);

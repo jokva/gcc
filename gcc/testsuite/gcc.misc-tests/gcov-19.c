@@ -188,6 +188,19 @@ mcdc005c (int a, int b, int c, int d) {
         x = a + b + c + d;
 }
 
+void
+mcdc005d (int a, int b, int c, int d) {
+    /* This test is quite significant - it has a single input
+       (1, 0, 0, 0) and tests specifically for when a multi-term left operand
+       is masked. d = 0 should mask a || b and for the input there are no other
+       sources for masking a (since b = 0). */
+    if ((a || b) && (c || d)) /* conditions(2/8) true(0 1 2 3) false(0 1) */
+			      /* conditions(end) */
+	x = a + b;
+    else
+	x = c + d;
+}
+
 
 /* nested conditionals */
 void
@@ -725,15 +738,6 @@ mcdc021c () {
 }
 
 
-// void fun (int a, int b, int c, int d, int e)
-// {
-//     if (a && (b || c) && (d || e))
-// 	x = a + b + c + d + e;
-//     else {
-// 	x = x;
-//     }
-// }
-//
 /* Adapted from linux arch/x86/tools/relocs.c
    With poor edge contracting this became an infinite loop. */
 void
@@ -798,6 +802,8 @@ int main ()
     mcdc005b (1, 0, 0, 0);
 
     mcdc005c (0, 1, 1, 0);
+
+    mcdc005d (1, 0, 0, 0);
 
     mcdc006a (0, 0, 0, 0, 0);
     mcdc006a (1, 0, 0, 0, 0);
