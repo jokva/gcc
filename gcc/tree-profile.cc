@@ -402,7 +402,12 @@ scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
    b[0] and d[0] are identical to the a || b example, but d[1].
    T.preds = {b,d}, top = b, bot = d, and b.succs[0] = c.  ancestors(c) = {a,b}
    which is d[1] and the search terminates as a.preds is empty and b.preds are
-   discarded. */
+   discarded.
+
+   The masking vector is represented as two bitfields per term in the
+   expression.  The expression a || b && c becomes the term vector [a b c] and
+   the bitsets are masks = [a.true a.false b.true ...].  The kth bit is set if
+   the the kth term is masked by the node-outcome. */
 void
 masking_vector (
     const basic_block *blocks,
@@ -429,8 +434,7 @@ masking_vector (
 	    if (e1->src->index >= e2->src->index)
 		continue;
 
-	    const unsigned flag = flags[k];
-	    if (!(e1->flags & e2->flags & flag))
+	    if (!(e1->flags & e2->flags & flags[k]))
 		continue;
 
 	    const int i1 = index_of (e1->src, blocks, nblocks);
@@ -440,11 +444,10 @@ masking_vector (
 
 	    basic_block top = e1->src;
 	    basic_block bot = e2->src;
-	    edge lime = edge_with (top->succs, flags[k+1]);
-	    basic_block lim = contract_edge (lime, nullptr, nullptr)->dest;
+	    edge lim = edge_with (top->succs, flags[k+1]);
 
 	    queue.truncate (0);
-	    queue.safe_push (lim);
+	    queue.quick_push (contract_edge (lim, nullptr, nullptr)->dest);
 
 	    const int m = i2*2 + k;
 	    while (!queue.is_empty ())
@@ -452,13 +455,8 @@ masking_vector (
 		basic_block q = queue.pop ();
 		for (edge e : q->preds)
 		{
-		    e = contract_edge_up (e);
-		    basic_block b = e->src;
-
-		    if (b->index > bot->index)
-			continue;
-		    gcc_assert (b != bot);
-		    if (b == bot)
+		    basic_block b = contract_edge_up (e)->src;
+		    if (b->index >= bot->index)
 			continue;
 
 		    const int index = index_of (b, blocks, nblocks);
@@ -471,7 +469,7 @@ masking_vector (
 
 		    masks[m] |= bit;
 		    if (b != top)
-			queue.safe_push (e->src);
+			queue.safe_push (b);
 		}
 	    }
 	}
