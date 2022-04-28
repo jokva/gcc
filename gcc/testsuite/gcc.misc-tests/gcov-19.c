@@ -5,7 +5,8 @@
 int x = 0;
 
 /* || works */
-void mcdc001a (int a, int b)
+void
+mcdc001a (int a, int b)
 {
     if (a || b) /* conditions(1/4) true(0) false(0 1) */
 		/* conditions(end) */
@@ -14,7 +15,8 @@ void mcdc001a (int a, int b)
 	x = 2;
 }
 
-void mcdc001b (int a, int b)
+void
+mcdc001b (int a, int b)
 {
     if (a || b) /* conditions(3/4) true(0) */
 		/* conditions(end) */
@@ -23,7 +25,8 @@ void mcdc001b (int a, int b)
 	x = 2;
 }
 
-void mcdc001c (int a, int b)
+void
+mcdc001c (int a, int b)
 {
     if (a || b) /* conditions(4/4) */
 	x = 1;
@@ -31,7 +34,8 @@ void mcdc001c (int a, int b)
 	x = 2;
 }
 
-void mcdc001d (int a, int b, int c)
+void
+mcdc001d (int a, int b, int c)
 {
     if (a || b || c) /* conditions(2/6) false(0 1 2) true(2) */
 		     /* conditions(end) */
@@ -39,7 +43,8 @@ void mcdc001d (int a, int b, int c)
 }
 
 /* && works */
-void mcdc002a (int a, int b)
+void
+mcdc002a (int a, int b)
 {
     if (a && b) /* conditions(1/4) true(0 1) false(0) */
 		/* conditions(end) */
@@ -48,7 +53,8 @@ void mcdc002a (int a, int b)
 	x = 2;
 }
 
-void mcdc002b (int a, int b)
+void
+mcdc002b (int a, int b)
 {
     if (a && b) /* conditions(3/4) false(0) */
 		/* conditions(end) */
@@ -57,7 +63,8 @@ void mcdc002b (int a, int b)
 	x = 2;
 }
 
-void mcdc002c (int a, int b)
+void
+mcdc002c (int a, int b)
 {
     if (a && b) /* conditions(4/4) */
 	x = 1;
@@ -65,7 +72,8 @@ void mcdc002c (int a, int b)
 	x = 2;
 }
 
-void mcdc002d (int a, int b, int c)
+void
+mcdc002d (int a, int b, int c)
 {
     /*
      * This is an odd case, and falls victim to trying to detect nested ifs.
@@ -85,7 +93,8 @@ void mcdc002d (int a, int b, int c)
 }
 
 /* negation works */
-void mcdc003a (int a, int b)
+void
+mcdc003a (int a, int b)
 {
     if (!a || !b) /* conditions(2/4) false(0 1) */
 		  /* conditions(end) */
@@ -95,7 +104,8 @@ void mcdc003a (int a, int b)
 }
 
 /* single conditionals with and without else */
-void mcdc004a (int a)
+void
+mcdc004a (int a)
 {
     if (a) /* conditions(1/2) true(0) */
 	   /* conditions(end) */
@@ -104,7 +114,8 @@ void mcdc004a (int a)
 	x = 2;
 }
 
-void mcdc004b (int a)
+void
+mcdc004b (int a)
 {
     if (a) /* conditions(2/2) */
 	x = 1;
@@ -112,14 +123,16 @@ void mcdc004b (int a)
 	x = 2;
 }
 
-void mcdc004c (int a)
+void
+mcdc004c (int a)
 {
     if (a) /* conditions(1/2) false(0) */
 	   /* conditions(end) */
 	x = 1;
 }
 
-void mcdc004d (int a, int b, int c) {
+void
+mcdc004d (int a, int b, int c) {
     /* With no else this is interpreted as (a && (b || c)) */
     if (a)  /* conditions(3/6) true(2) false(1 2)*/
     {
@@ -128,7 +141,8 @@ void mcdc004d (int a, int b, int c) {
     }
 }
 
-void mcdc004e (int a, int b, int c) {
+void
+mcdc004e (int a, int b, int c) {
     /* With the else, this is interpreted as 2 expressions */
     if (a)  /* conditions(2/2) */
     {
@@ -142,7 +156,8 @@ void mcdc004e (int a, int b, int c) {
 }
 
 /* mixing && and || works */
-void mcdc005a (int a, int b, int c)
+void
+mcdc005a (int a, int b, int c)
 {
     if ((a && b) || c) /* conditions(1/6) true(0 1) false(0 1 2) */
 		       /* conditions(end) */
@@ -151,7 +166,8 @@ void mcdc005a (int a, int b, int c)
 	x = 2;
 }
 
-void mcdc005b (int a, int b, int c, int d)
+void
+mcdc005b (int a, int b, int c, int d)
 {
     /* This is where masking MC/DC gets unintuitive:
 
@@ -165,7 +181,8 @@ void mcdc005b (int a, int b, int c, int d)
 	x = 2;
 }
 
-void mcdc005c (int a, int b, int c, int d) {
+void
+mcdc005c (int a, int b, int c, int d) {
     if (a || (b && c) || d) /* conditions(2/8) true(0 3) false(0 1 2 3) */
 			    /* conditions(end) */
         x = a + b + c + d;
@@ -173,7 +190,8 @@ void mcdc005c (int a, int b, int c, int d) {
 
 
 /* nested conditionals */
-void mcdc006a (int a, int b, int c, int d, int e)
+void
+mcdc006a (int a, int b, int c, int d, int e)
 {
     if (a) /* conditions(2/2) */
     {
@@ -193,7 +211,8 @@ void mcdc006a (int a, int b, int c, int d, int e)
     }
 }
 
-void mcdc006b (int a, int b, int c)
+void
+mcdc006b (int a, int b, int c)
 {
     if (a) /* conditions(6/6) */
 	if (b)
@@ -201,7 +220,8 @@ void mcdc006b (int a, int b, int c)
 		x = a + b + c;
 }
 
-void mcdc006c (int a, int b, int c)
+void
+mcdc006c (int a, int b, int c)
 {
     if (a) /* conditions(2/2) */
     {
@@ -224,7 +244,8 @@ void mcdc006c (int a, int b, int c)
 }
 
 /* else/if */
-void mcdc007a (int a, int b, int c, int d)
+void
+mcdc007a (int a, int b, int c, int d)
 {
     if (a) /* conditions(2/2) */
     {
@@ -244,7 +265,8 @@ void mcdc007a (int a, int b, int c, int d)
     }
 }
 
-void mcdc007b (int a, int b, int c)
+void
+mcdc007b (int a, int b, int c)
 {
     /* similar to if (a || b || c) x = 1 */
     if (a) /* conditions(2/2) */
@@ -262,34 +284,39 @@ then:
 }
 
 /* while loop */
-void mcdc008a (int a)
+void
+mcdc008a (int a)
 {
     while (a < 10) /* conditions(2/2) */
 	x = a++;
 }
 
-void mcdc008b (int a)
+void
+mcdc008b (int a)
 {
     while (a > 10) /* conditions(1/2) true(0) */
 		   /* conditions(end) */
 	x = a--;
 }
 
-void mcdc008c (int a)
+void
+mcdc008c (int a)
 {
     // should work, even with no body
     while (a) /* conditions(2/2) */
 	break;
 }
 
-void mcdc008d (int a, int b, int c, int d)
+void
+mcdc008d (int a, int b, int c, int d)
 {
     /* multi-term loop conditional */
     while ((a && (b || c)) && d) /* conditions(8/8) */
 	a = b = c = d = 0;
 }
 
-void mcdc009a (int a, int b)
+void
+mcdc009a (int a, int b)
 {
     while (a > 0 && b > 0) /* conditions(3/4) false(1) */
 			   /* conditions(end) */
@@ -297,7 +324,8 @@ void mcdc009a (int a, int b)
 }
 
 /* for loop */
-void mcdc010a(int a, int b)
+void
+mcdc010a(int a, int b)
 {
     for (int i = 0; i < b; i++) /* conditions(2/2) */
     {
@@ -308,7 +336,8 @@ void mcdc010a(int a, int b)
     }
 }
 
-void mcdc010b ()
+void
+mcdc010b ()
 {
     for (int a = 0; a <= 1; ++a) /* conditions(2/2) */
     {
@@ -319,7 +348,8 @@ void mcdc010b ()
 int always (int) { return 1; }
 
 /* no-condition infinite loops */
-void mcdc010c (int a)
+void
+mcdc010c (int a)
 {
     for (;;)
     {
@@ -334,14 +364,16 @@ void mcdc010c (int a)
 }
 
 /* conditionals without control flow constructs work */
-void mcdc011a (int a, int b, int c)
+void
+mcdc011a (int a, int b, int c)
 {
     x = (a && b) || c; /* conditions(5/6) false(1) */
 		       /* conditions(end) */
 }
 
 /* sequential expressions are handled independently */
-void mcdc012a (int a, int b, int c) {
+void
+mcdc012a (int a, int b, int c) {
     if (a || b) /* conditions(3/4) true(0) */
 	/* conditions(end) */
 	x = 1;
@@ -356,7 +388,8 @@ void mcdc012a (int a, int b, int c) {
  * cannot ever satisfy MC/DC, even with all input combinations, because not all
  * variables independently affect the decision
  */
-void mcdc013a (int a, int /* b */, int c)
+void
+mcdc013a (int a, int /* b */, int c)
 {
     /*
      * Specification: (a && b) || c
@@ -371,7 +404,8 @@ void mcdc013a (int a, int /* b */, int c)
 	x = 2;
 }
 
-void mcdc014a ()
+void
+mcdc014a ()
 {
     int conds[64] = { 0 };
     /* conditions(64/128) true(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63) */
@@ -392,7 +426,8 @@ void mcdc014a ()
 }
 
 /* early returns */
-void mcdc015a (int a, int b)
+void
+mcdc015a (int a, int b)
 {
     if (a) /* conditions(2/2) */
 	return;
@@ -402,7 +437,8 @@ void mcdc015a (int a, int b)
 	x = 1;
 }
 
-void mcdc015b (int a, int b)
+void
+mcdc015b (int a, int b)
 {
     for (int i = 5; i > a; i--) /* conditions(2/2) */
     {
@@ -412,7 +448,8 @@ void mcdc015b (int a, int b)
     }
 }
 
-void mcdc015c (int a, int b)
+void
+mcdc015c (int a, int b)
 {
     for (int i = 5; i > a; i--) /* conditions(2/2) */
     {
@@ -433,14 +470,16 @@ void mcdc015c (int a, int b)
 
 
 /* check nested loops */
-void mcdc016a (int a, int b)
+void
+mcdc016a (int a, int b)
 {
     for (int i = 0; i < a; i++) /* conditions(2/2) */
 	for (int k = 0; k < b; k++) /* conditions(2/2) */
 	    x = i + k;
 }
 
-void mcdc016b (int a, int b)
+void
+mcdc016b (int a, int b)
 {
     for (int i = 0; i < a; i++) /* conditions(2/2) */
     {
@@ -452,7 +491,8 @@ void mcdc016b (int a, int b)
     }
 }
 
-void mcdc016c (int a, int b)
+void
+mcdc016c (int a, int b)
 {
     for (int i = 0; i < a; i++) /* conditions(2/2) */
     {
@@ -465,7 +505,8 @@ void mcdc016c (int a, int b)
     }
 }
 
-void mcdc016d (int a, int b)
+void
+mcdc016d (int a, int b)
 {
     for (int i = 0; i < a; i++) /* conditions(2/2) */
     {
@@ -481,7 +522,8 @@ void mcdc016d (int a, int b)
 }
 
 /* do-while loops */
-void mcdc017a (int a)
+void
+mcdc017a (int a)
 {
     do
     {
@@ -489,9 +531,11 @@ void mcdc017a (int a)
     } while (a > 0); /* conditions(2/2) */
 }
 
-void noop () {}
+void
+noop () {}
 
-void mcdc017b (int a, int b)
+void
+mcdc017b (int a, int b)
 {
     do
     {
@@ -508,7 +552,8 @@ void mcdc017b (int a, int b)
     } while (a > 0); /* conditions(2/2) */
 }
 
-void mcdc017c (int a, int b)
+void
+mcdc017c (int a, int b)
 {
     int left = 0;
     int right = 0;
@@ -564,7 +609,8 @@ int mcdc018a (int a, int b, int c, int d, int e, int f, int g, int len)
     return 1;
 }
 
-void mcdc018b (int a, int b, int c) {
+void
+mcdc018b (int a, int b, int c) {
     int n;
     while (a) /* conditions(2/2) */
     {
@@ -581,7 +627,8 @@ void mcdc018b (int a, int b, int c) {
 }
 
 /* Adapted from zlib/compress2 */
-void mcdc018c (int a, int b)
+void
+mcdc018c (int a, int b)
 {
     int err;
     do
@@ -597,7 +644,8 @@ void mcdc018c (int a, int b)
 }
 
 /* too many conditions, coverage gives up */
-void mcdc019a ()
+void
+mcdc019a ()
 {
     int conds[65] = { 0 };
     #pragma GCC diagnostic push
@@ -620,7 +668,8 @@ void mcdc019a ()
 }
 
 /* ternary */
-void mcdc020a (int a)
+void
+mcdc020a (int a)
 {
     // special case, this can be reduced to:
     // _1 = argc != 0;
@@ -631,12 +680,14 @@ void mcdc020a (int a)
     x = a ? 2 : 1; /* conditions(2/2) */
 }
 
-void mcdc020b (int a, int b)
+void
+mcdc020b (int a, int b)
 {
     x = (a || b) ? 1 : 0; /* conditions(3/4) true(1) */
 }
 
-void mcdc020c (int a, int b)
+void
+mcdc020c (int a, int b)
 {
     x = a ? 0
 	: b ? 1 /* conditions(2/2) */
@@ -644,26 +695,49 @@ void mcdc020c (int a, int b)
 		/* conditions(end) */
 }
 
-/* infinite loop (no exit-edge), this should not be called, but it should
+/* Infinite loop (no exit-edge), this should not be called, but it should
    compile fine */
-void mcdc021a ()
+void
+mcdc021a ()
 {
     while (1)
 	;
 }
 
-void fun (int a, int b, int c, int d, int e)
-{
-    if (a && (b || c) && (d || e))
-	x = a + b + c + d + e;
-    else {
-	x = x;
-    }
+/* Computed goto can give all sorts of problems, includ difficult path
+   contractions. */
+void
+mcdc021b () {
+  void *op = &&dest;
+dest:
+  if (op) /* conditions(0/2) true(0) false(0) */
+	  /* conditions(end) */
+    goto * 0;
 }
 
+int __sigsetjmp ();
+
+void
+mcdc021c () {
+  while (x) /* conditions(0/2) true(0) false(0)*/
+	    /* conditions(end) */
+     __sigsetjmp ();
+}
+
+
+// void fun (int a, int b, int c, int d, int e)
+// {
+//     if (a && (b || c) && (d || e))
+// 	x = a + b + c + d + e;
+//     else {
+// 	x = x;
+//     }
+// }
+//
 /* Adapted from linux arch/x86/tools/relocs.c
    With poor edge contracting this became an infinite loop. */
-void mcdc022a (int a, int b)
+void
+mcdc022a (int a, int b)
 {
     for (int i = 0; i < 5; i++) /* conditions(2/2) */
     {
