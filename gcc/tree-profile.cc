@@ -216,6 +216,13 @@ edge_with (const vec<edge, va_gc> *edges, unsigned flag)
     return NULL;
 }
 
+/* Check if the edge is a conditional. */
+bool
+edge_conditional_p (const edge e)
+{
+    return e->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE);
+}
+
 /* Sometimes, for example with function calls and C++ destructors the CFG gets
    extra nodes that are essentially single-entry-single-exit in the middle of
    boolean expressions.  For example:
@@ -242,7 +249,7 @@ edge_with (const vec<edge, va_gc> *edges, unsigned flag)
            F   T
 
    contract_edge ignores the series of intermediate nodes and makes a virtual
-   edge A -> C, without having to construct a new simplified CFG explicitly. */
+   edge A -> C without having to construct a new simplified CFG explicitly. */
 edge
 contract_edge (edge e, basic_block post, sbitmap expr)
 {
@@ -277,17 +284,21 @@ contract_edge_up (edge e, basic_block b = NULL)
 	basic_block src  = e->src;
 	basic_block dest = e->dest;
 
+	// loop edges, gotos
+	if (src->index > dest->index)
+	    return e;
+
 	if (src == b)
 	    return e;
 
-	if (!single (dest->succs))
+	if (!single (src->preds))
+	    return e;
+	if (!single (src->succs))
 	    return e;
 	if (!single (dest->preds))
 	    return e;
-	if (!single (src->preds))
-	    return e;
 
-	e = single_pred_edge (src);
+	e = single_edge (src->preds);
     }
 }
 
@@ -409,18 +420,21 @@ masking_vector (
     auto_vec<basic_block, 32> queue;
     auto_vec<basic_block, 32> masked;
 
-    for (int i = 0; i < nblocks; i++)
+    // Start at the 2nd block; the first block cannot be an outcome.
+    for (int i = 1; i < nblocks; i++)
     {
 	basic_block b = blocks[i];
 	for (int k = 0; k < 2; k++)
 	for (edge e1 : b->preds)
 	for (edge e2 : b->preds)
 	{
-	    const unsigned flag = flags[k];
-	    e1 = contract_edge_up (e1);
-	    e2 = contract_edge_up (e2);
 	    if (e1 == e2)
 		continue;
+
+	    const unsigned flag = flags[k];
+	    e1 = contract_edge_up (e1, blocks[0]);
+	    e2 = contract_edge_up (e2, blocks[0]);
+
 	    if (!(e1->flags & e2->flags & flag))
 		continue;
 
@@ -664,7 +678,7 @@ collect_conditions (conds_ctx& ctx, basic_block entry, basic_block exit)
 	if (size_t (nterms) <= CONDITIONS_MAX_TERMS)
 	{
 	    for (edge e : last->succs)
-		if (e->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE))
+		if (edge_conditional_p (e))
 		    ctx.blocks[nterms++] = e->dest;
 	    ctx.commit (nterms);
 	}
@@ -814,7 +828,7 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
     {
 	for (edge e : blocks[i]->succs)
 	{
-	    if (!(e->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE)))
+	    if (!edge_conditional_p (e))
 		continue;
 
 	    /* accu |= expr[i] */
@@ -876,6 +890,12 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
 	const int k = outcome[i];
 	for (edge e : outcome_blocks[i]->preds)
 	{
+	    /* Only instrument edges from inside the expression. Sometimes
+	       complicated control flow (like sigsetjmp and gotos) add
+	       predecessors that don't come from the boolean expression. */
+	    if (index_of (e->src, blocks, nblocks - 2) == -1)
+		continue;
+
 	    tree ref = tree_coverage_counter_ref (GCOV_COUNTER_CONDS,
 						  2*condno + k);
 	    tree tmp = make_temp_ssa_name (gcov_type_node, NULL,
