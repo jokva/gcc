@@ -416,15 +416,13 @@ masking_vector (
     };
 
     auto_vec<basic_block, 32> queue;
-    auto_vec<basic_block, 32> masked;
 
     // Start at the 2nd block; the first block cannot be an outcome.
     for (int i = 1; i < nblocks; i++)
     {
-	basic_block b = blocks[i];
 	for (int k = 0; k < 2; k++)
-	for (edge e1 : b->preds)
-	for (edge e2 : b->preds)
+	for (edge e1 : blocks[i]->preds)
+	for (edge e2 : blocks[i]->preds)
 	{
 	    // Order the sources so that e1 is a term left of e2. This also
 	    // guards against incoming loop edges
@@ -445,37 +443,36 @@ masking_vector (
 	    edge lime = edge_with (top->succs, flags[k+1]);
 	    basic_block lim = contract_edge (lime, nullptr, nullptr)->dest;
 
-	    masked.truncate (0);
 	    queue.truncate (0);
 	    queue.safe_push (lim);
 
+	    const int m = i2*2 + k;
 	    while (!queue.is_empty ())
 	    {
 		basic_block q = queue.pop ();
 		for (edge e : q->preds)
 		{
 		    e = contract_edge_up (e);
-		    if (e->src->index > bot->index)
+		    basic_block b = e->src;
+
+		    if (b->index > bot->index)
 			continue;
-		    if (e->src == bot)
-			continue;
-		    if (masked.contains (e->src))
-			continue;
-		    if (index_of (e->src, blocks, nblocks) == -1)
+		    gcc_assert (b != bot);
+		    if (b == bot)
 			continue;
 
-		    masked.safe_push (e->src);
-		    if (e->src != top)
+		    const int index = index_of (b, blocks, nblocks);
+		    if (index == -1)
+			continue;
+
+		    gcov_type_unsigned bit = gcov_type_unsigned (1) << index;
+		    if (masks[m] & bit)
+			continue;
+
+		    masks[m] |= bit;
+		    if (b != top)
 			queue.safe_push (e->src);
 		}
-	    }
-
-	    const int m = i2*2 + k;
-	    for (basic_block b : masked)
-	    {
-		const int index = index_of (b, blocks, nblocks);
-		gcc_assert (index != -1);
-		masks[m] |= gcov_type_unsigned (1) << index;
 	    }
 	}
     }
