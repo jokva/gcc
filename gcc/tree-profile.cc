@@ -251,15 +251,13 @@ edge_conditional_p (const edge e)
    contract_edge ignores the series of intermediate nodes and makes a virtual
    edge A -> C without having to construct a new simplified CFG explicitly. */
 edge
-contract_edge (edge e, basic_block post)
+contract_edge (edge e)
 {
     while (true)
     {
 	basic_block src  = e->src;
 	basic_block dest = e->dest;
 
-	if (dest == post)
-	    return e;
 	if (!single (dest->succs))
 	    return e;
 	if (!single (dest->preds))
@@ -282,10 +280,6 @@ contract_edge_up (edge e, basic_block b = NULL)
     {
 	basic_block src  = e->src;
 	basic_block dest = e->dest;
-
-	// loop edges, gotos
-	if (src->index > dest->index)
-	    return e;
 
 	if (src == b)
 	    return e;
@@ -446,7 +440,7 @@ masking_vector (
 	    edge lim = edge_with (top->succs, flags[k+1]);
 
 	    queue.truncate (0);
-	    queue.quick_push (contract_edge (lim, nullptr)->dest);
+	    queue.quick_push (contract_edge (lim)->dest);
 
 	    const int m = i2*2 + k;
 	    while (!queue.is_empty ())
@@ -488,18 +482,22 @@ scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 
     for (int pos = 0; pos < n; pos++)
     {
-	basic_block block = out[pos];
-
-	for (edge e : block->succs)
+	for (edge e : out[pos]->succs)
 	{
-	    basic_block dest = contract_edge (e, post)->dest;
+	    /* contract_edge might skip past the post dominator (which is a
+	       bound for the expression) if it is a sequence of
+	       non-conditionals, so check the direct edge first. */
+	    if (e->dest == post)
+		continue;
+
+	    basic_block dest = contract_edge (e)->dest;
+	    if (dest == post)
+		continue;
 
 	    /* Skip loop edges, as they go outside the expression.  */
 	    // TODO: this can probably be removed with some other loop-escape
 	    // adjustments (in ancestor search?)
 	    if (dest == loop)
-		continue;
-	    if (dest == post)
 		continue;
 	    if (!is_conditional_p (dest))
 		continue;
@@ -528,7 +526,7 @@ neighborhood (basic_block *blocks, int nblocks, const sbitmap G)
     {
 	for (edge e : blocks[i]->succs)
 	{
-	    e = contract_edge (e, nullptr);
+	    e = contract_edge (e);
 	    if (bitmap_bit_p (G, e->dest->index))
 		continue;
 
@@ -827,7 +825,7 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
 
     /* Add instructions for flushing the local accumulators.
        The two last blocks are the outcome blocks, and we need to flush the
-       accumulators at the end-of-expression. If it is done later then flushes
+       accumulators at the end-of-expression.  If it is done later then flushes
        could be lost to exception handling or unexpected termination.
 
        It is important that the flushes happen on on the outcome's incoming
