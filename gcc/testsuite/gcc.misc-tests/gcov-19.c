@@ -285,6 +285,11 @@ mcdc007a (int a, int b, int c, int d)
 void
 mcdc007b (int a, int b, int c)
 {
+    goto begin;
+then:
+    x = 1;
+    return;
+begin:
     /* similar to if (a || b || c) x = 1 */
     if (a) /* conditions(2/2) */
 	goto then;
@@ -293,11 +298,6 @@ mcdc007b (int a, int b, int c)
     else if (c) /* conditions(1/2) true(0) */
 		/* conditions(end) */
 	goto then;
-
-    return;
-
-then:
-    x = 1;
 }
 
 /* while loop */

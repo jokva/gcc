@@ -469,13 +469,12 @@ masking_vector (
     }
 }
 
+/* TODO: doc */
 int
 scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 	   sbitmap expr)
 {
     gcc_assert (maxsize > 0);
-
-    basic_block loop = pre->loop_father->header;
     int n = 0;
     out[n++] = pre;
     bitmap_set_bit (expr, pre->index);
@@ -493,15 +492,8 @@ scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 	    basic_block dest = contract_edge (e)->dest;
 	    if (dest == post)
 		continue;
-
-	    /* Skip loop edges, as they go outside the expression.  */
-	    // TODO: this can probably be removed with some other loop-escape
-	    // adjustments (in ancestor search?)
-	    if (dest == loop)
-		continue;
 	    if (!is_conditional_p (dest))
 		continue;
-	    /* Already-seen, don't re-add.  */
 	    if (bitmap_bit_p (expr, dest->index))
 		continue;
 
@@ -511,7 +503,6 @@ scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 		return n;
 	}
     }
-
     return n;
 }
 
@@ -529,14 +520,6 @@ neighborhood (basic_block *blocks, int nblocks, const sbitmap G)
 	    e = contract_edge (e);
 	    if (bitmap_bit_p (G, e->dest->index))
 		continue;
-
-	    // hacky loop check
-	    // but should maybe apply to got as well
-	    // this is maybe unnecessary now?
-	    // TODO: fix this
-	    if (e->dest->index < e->src->index)
-		continue;
-
 	    out[n++] = e->dest;
 	}
     }
