@@ -520,7 +520,7 @@ scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 /* Find the neighborhood of the graph G = [blocks, blocks+n), the
    destination-nodes from G that are not also in G. */
 int
-neighborhood (basic_block *blocks, int nblocks, sbitmap G)
+neighborhood (basic_block *blocks, int nblocks, const sbitmap G)
 {
     int n = 0;
     basic_block *out = blocks + nblocks;
@@ -539,7 +539,6 @@ neighborhood (basic_block *blocks, int nblocks, sbitmap G)
 	    if (e->dest->index < e->src->index)
 		continue;
 
-	    bitmap_set_bit (G, e->dest->index);
 	    out[n++] = e->dest;
 	}
     }
@@ -565,8 +564,7 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     if (nblocks == 1)
 	return nblocks;
 
-    bitmap_copy (reachable, expr);
-    const int nsize = neighborhood (blocks, nblocks, reachable);
+    const int nsize = neighborhood (blocks, nblocks, expr);
     bitmap_copy (reachable, expr);
     basic_block *neighborhood = blocks + nblocks;
     basic_block *stack = neighborhood + nsize;
