@@ -590,6 +590,42 @@ emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2)
     gsi_insert_on_edge (e, write);
 }
 
+void visit (basic_block b, basic_block *blocks, int nblocks, sbitmap marks, auto_vec<basic_block, 32>& L)
+{
+    if (bitmap_bit_p (marks, b->index))
+	return;
+
+    bitmap_set_bit (marks, b->index);
+    for (edge e : b->succs)
+    {
+	e = contract_edge (e);
+	if (index_of (e->dest, blocks, nblocks) == -1)
+	    continue;
+	visit (e->dest, blocks, nblocks, marks, L);
+    }
+    L.safe_push (b);
+}
+
+/* Sort the blocks by term in the expression; for the expression (a || (b && c)
+   || d) the blocks should be [a b c d].  The algorithm is a simplified
+   depth-first search topological sort. */
+void sort_terms (basic_block *blocks, int nblocks, sbitmap marks)
+{
+    auto_vec<basic_block, 32> L;
+    L.reserve (nblocks);
+    bitmap_clear (marks);
+
+    for (int i = 0; i < nblocks; i++)
+	visit (blocks[i], blocks, nblocks, marks, L);
+
+    gcc_assert (int (L.length ()) == nblocks);
+    L.reverse ();
+    for (int i = 0; i < nblocks; i++)
+	blocks[i] = L[i];
+
+//TODO(monday) eliminate ->index comparisons
+}
+
 /* Walk the CFG and collect conditionals.
 
    1. Collect a candidate set G by walking from the root following all
@@ -608,6 +644,7 @@ emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2)
 void
 collect_conditions (conds_ctx& ctx, basic_block entry, basic_block exit)
 {
+    (void) index_lt;
     basic_block pre;
     basic_block post;
     for (pre = entry ;; pre = post)
@@ -626,15 +663,31 @@ collect_conditions (conds_ctx& ctx, basic_block entry, basic_block exit)
 	    continue;
 	}
 
-	int nterms = find_first_conditional (ctx, pre, post);
-	std::sort (ctx.blocks, ctx.blocks + nterms, index_lt);
+	const int nterms = find_first_conditional (ctx, pre, post);
+
+	sort_terms (ctx.blocks, nterms, ctx.G1);
+
+	//printf ("B: ");
+	//for (int i = 0; i < nterms; i++)
+	//    printf ("%d ", ctx.blocks[i]->index);
+	//printf("\n");
+
+	// TODO: mark and recover
+	// TODO: what happens to N(G)->preds on destructors? Need to be
+	// contracted?
+	for (int i = 0; i < nterms; i++)
+	    ctx.mark (ctx.blocks[i]);
+
+	// for single-term exprs
 	basic_block last = ctx.blocks[nterms - 1];
+	basic_block t = edge_with (last->succs, EDGE_TRUE_VALUE)->dest;
+	basic_block f = edge_with (last->succs, EDGE_FALSE_VALUE)->dest;
+	ctx.blocks[nterms+0] = t;
+	ctx.blocks[nterms+1] = f;
+
 	if (size_t (nterms) <= CONDITIONS_MAX_TERMS)
 	{
-	    for (edge e : last->succs)
-		if (edge_conditional_p (e))
-		    ctx.blocks[nterms++] = e->dest;
-	    ctx.commit (nterms);
+	    ctx.commit (nterms+2);
 	}
 	else
 	{
@@ -644,8 +697,8 @@ collect_conditions (conds_ctx& ctx, basic_block entry, basic_block exit)
 			nterms);
 	}
 
-	for (edge e : last->succs)
-	    collect_conditions (ctx, e->dest, post);
+	collect_conditions (ctx, t, post);
+	collect_conditions (ctx, f, post);
     }
 }
 
@@ -732,6 +785,17 @@ find_conditions (
 	calculate_dominance_info (CDI_DOMINATORS);
 	free_dom = true;
     }
+
+    printf ("digraph {\n");
+    basic_block bb;
+    FOR_EACH_BB_FN (bb, cfun)
+    {
+        for (edge e : bb->succs)
+        {
+            printf("    A%d->A%d;\n", e->src->index, e->dest->index);
+        }
+    }
+    printf("}\n");
 
     conds_ctx ctx (maxsize);
     ctx.blocks = blocks;
