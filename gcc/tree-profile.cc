@@ -583,9 +583,10 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     return k;
 }
 
+/* Emit lhs = op1 <op> op2 on edges.  This emits non-atomic instructions and
+   should only be used on the local accumulators. */
 void
-emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2,
-		 int atomic = 0)
+emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2)
 {
     tree tmp;
     gassign *read;
@@ -601,23 +602,7 @@ emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2,
     read = gimple_build_assign (tmp, op1);
     tmp = make_temp_ssa_name (gcov_type_node, NULL, "__conditions_tmp");
     bitw = gimple_build_assign (tmp, op, gimple_assign_lhs (read), op2);
-
-    if (atomic)
-    {
-	tree relaxed = build_int_cst (integer_type_node, MEMMODEL_RELAXED);
-	tree store = builtin_decl_explicit (
-		TYPE_PRECISION (gcov_type_node) > 32
-		? BUILT_IN_ATOMIC_STORE_8
-		: BUILT_IN_ATOMIC_STORE_4);
-
-	// __atomic_store_8 (&lhs, (op1 | op2), __ATOMIC_RELAXED)
-	write = gimple_build_call (store, 3, build_addr (lhs),
-				   gimple_assign_lhs (bitw), relaxed);
-    }
-    else
-    {
-	write = gimple_build_assign (lhs, gimple_assign_lhs (bitw));
-    }
+    write = gimple_build_assign (lhs, gimple_assign_lhs (bitw));
 
     gsi_insert_on_edge (e, read);
     gsi_insert_on_edge (e, bitw);
@@ -835,10 +820,10 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
     }
 
     const bool atomic = flag_profile_update == PROFILE_UPDATE_ATOMIC;
-    const tree atomic_load = builtin_decl_explicit
+    const tree atomic_ior = builtin_decl_explicit
 	(TYPE_PRECISION (gcov_type_node) > 32
-	 ? BUILT_IN_ATOMIC_LOAD_8
-	 : BUILT_IN_ATOMIC_LOAD_4);
+	 ? BUILT_IN_ATOMIC_FETCH_OR_8
+	 : BUILT_IN_ATOMIC_FETCH_OR_4);
 
     /* Add instructions for flushing the local accumulators.
        The two last blocks are the outcome blocks, and we need to flush the
@@ -892,26 +877,24 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
 	    {
 		tree relaxed = build_int_cst (integer_type_node,
 					      MEMMODEL_RELAXED);
-		tree lhs_type = TREE_TYPE (TREE_TYPE (atomic_load));
-		tree lhs = make_temp_ssa_name (lhs_type, NULL,
-					       "__conditions_load_lhs");
+		ref = unshare_expr (ref);
+		gassign *read = gimple_build_assign (tmp, accu[k]);
+		gcall *flush = gimple_build_call (atomic_ior, 3,
+						 build_addr (ref),
+						 gimple_assign_lhs (read),
+						 relaxed);
 
-		gcall *load = gimple_build_call (atomic_load, 2,
-						 build_addr (ref), relaxed);
-		gimple_set_lhs (load, lhs);
-		gassign *assign = gimple_build_assign (tmp, NOP_EXPR,
-						       gimple_call_lhs (load));
-		gsi_insert_on_edge (e, load);
-		gsi_insert_on_edge (e, assign);
+		gsi_insert_on_edge (e, read);
+		gsi_insert_on_edge (e, flush);
 	    }
 	    else
 	    {
 		gassign *read = gimple_build_assign (tmp, ref);
 		tmp = gimple_assign_lhs (read);
 		gsi_insert_on_edge (e, read);
+		ref = unshare_expr (ref);
+		emit_bitwise_op (e, ref, accu[k], BIT_IOR_EXPR, tmp);
 	    }
-	    ref = unshare_expr (ref);
-	    emit_bitwise_op (e, ref, accu[k], BIT_IOR_EXPR, tmp, atomic);
 	}
     }
     return nblocks - 2;
