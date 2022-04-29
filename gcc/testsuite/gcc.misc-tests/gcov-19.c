@@ -132,7 +132,8 @@ mcdc004c (int a)
 }
 
 void
-mcdc004d (int a, int b, int c) {
+mcdc004d (int a, int b, int c)
+{
     /* With no else this is interpreted as (a && (b || c)) */
     if (a)  /* conditions(3/6) true(2) false(1 2)*/
     {
@@ -142,7 +143,8 @@ mcdc004d (int a, int b, int c) {
 }
 
 void
-mcdc004e (int a, int b, int c) {
+mcdc004e (int a, int b, int c)
+{
     /* With the else, this is interpreted as 2 expressions */
     if (a)  /* conditions(2/2) */
     {
@@ -182,14 +184,16 @@ mcdc005b (int a, int b, int c, int d)
 }
 
 void
-mcdc005c (int a, int b, int c, int d) {
+mcdc005c (int a, int b, int c, int d)
+{
     if (a || (b && c) || d) /* conditions(2/8) true(0 3) false(0 1 2 3) */
 			    /* conditions(end) */
         x = a + b + c + d;
 }
 
 void
-mcdc005d (int a, int b, int c, int d) {
+mcdc005d (int a, int b, int c, int d)
+{
     /* This test is quite significant - it has a single input
        (1, 0, 0, 0) and tests specifically for when a multi-term left operand
        is masked. d = 0 should mask a || b and for the input there are no other
@@ -386,9 +390,10 @@ mcdc011a (int a, int b, int c)
 
 /* sequential expressions are handled independently */
 void
-mcdc012a (int a, int b, int c) {
+mcdc012a (int a, int b, int c)
+{
     if (a || b) /* conditions(3/4) true(0) */
-	/* conditions(end) */
+		/* conditions(end) */
 	x = 1;
     else
 	x = 2;
@@ -623,7 +628,8 @@ int mcdc018a (int a, int b, int c, int d, int e, int f, int g, int len)
 }
 
 void
-mcdc018b (int a, int b, int c) {
+mcdc018b (int a, int b, int c)
+{
     int n;
     while (a) /* conditions(2/2) */
     {
@@ -720,7 +726,8 @@ mcdc021a ()
 /* Computed goto can give all sorts of problems, includ difficult path
    contractions. */
 void
-mcdc021b () {
+mcdc021b ()
+{
   void *op = &&dest;
 dest:
   if (op) /* conditions(0/2) true(0) false(0) */

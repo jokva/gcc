@@ -223,7 +223,7 @@ edge_conditional_p (const edge e)
     return e->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE);
 }
 
-/* Sometimes, for example with function calls and C++ destructors the CFG gets
+/* Sometimes, for example with function calls and C++ destructors, the CFG gets
    extra nodes that are essentially single-entry-single-exit in the middle of
    boolean expressions.  For example:
 
@@ -251,7 +251,7 @@ edge_conditional_p (const edge e)
    contract_edge ignores the series of intermediate nodes and makes a virtual
    edge A -> C without having to construct a new simplified CFG explicitly. */
 edge
-contract_edge (edge e, basic_block post, sbitmap expr)
+contract_edge (edge e, basic_block post)
 {
     while (true)
     {
@@ -271,7 +271,6 @@ contract_edge (edge e, basic_block post, sbitmap expr)
 	if (!single (succe->dest->preds))
 	    return e;
 
-	if (expr) bitmap_set_bit (expr, dest->index);
 	e = succe;
     }
 }
@@ -447,7 +446,7 @@ masking_vector (
 	    edge lim = edge_with (top->succs, flags[k+1]);
 
 	    queue.truncate (0);
-	    queue.quick_push (contract_edge (lim, nullptr, nullptr)->dest);
+	    queue.quick_push (contract_edge (lim, nullptr)->dest);
 
 	    const int m = i2*2 + k;
 	    while (!queue.is_empty ())
@@ -493,7 +492,7 @@ scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 
 	for (edge e : block->succs)
 	{
-	    basic_block dest = contract_edge (e, post, expr)->dest;
+	    basic_block dest = contract_edge (e, post)->dest;
 
 	    /* Skip loop edges, as they go outside the expression.  */
 	    // TODO: this can probably be removed with some other loop-escape
@@ -529,6 +528,7 @@ neighborhood (basic_block *blocks, int nblocks, sbitmap G)
     {
 	for (edge e : blocks[i]->succs)
 	{
+	    e = contract_edge (e, nullptr);
 	    if (bitmap_bit_p (G, e->dest->index))
 		continue;
 
