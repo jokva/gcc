@@ -64,6 +64,8 @@ along with GCC; see the file COPYING3.  If not see
 
 #include "tree.h"
 
+#include "gimple-pretty-print.h"
+
 static GTY(()) tree gcov_type_node;
 static GTY(()) tree tree_interval_profiler_fn;
 static GTY(()) tree tree_pow2_profiler_fn;
@@ -163,6 +165,24 @@ index_of (const_basic_block needle, const const_basic_block *blocks, int size)
     return -1;
 }
 
+/* Returns true if this is a conditional node, i.e. it has outgoing true &
+   false edges. */
+bool
+is_conditional_p (const basic_block b)
+{
+    if (single_succ_p (b))
+        return false;
+
+    unsigned t = 0;
+    unsigned f = 0;
+    for (edge e : b->succs)
+    {
+        t |= (e->flags & EDGE_TRUE_VALUE);
+        f |= (e->flags & EDGE_FALSE_VALUE);
+    }
+    return t && f;
+}
+
 /* Compare block indices, function for using with std::sort */
 bool
 index_lt (const basic_block x, const basic_block y)
@@ -202,7 +222,7 @@ single_edge (const vec<edge, va_gc> *edges)
 	    continue;
 	return e;
     }
-    gcc_unreachable ();
+    return NULL;
 }
 
 edge
@@ -251,23 +271,66 @@ edge_conditional_p (const edge e)
    contract_edge ignores the series of intermediate nodes and makes a virtual
    edge A -> C without having to construct a new simplified CFG explicitly. */
 edge
-contract_edge (edge e)
+contract_edge (edge e, basic_block post = NULL)
 {
+    if (is_conditional_p (e->dest))
+	return e;
+
+    gimple *stmt = gsi_stmt (gsi_last_bb (e->dest));
+    if (!stmt) return e;
+
+    edge source = e;
+
+    const location_t left = gimple_location (stmt);
+    expanded_location xloc = expand_location (left);
+    printf ("\n\n----\ncontract (%d)\n", e->src->index);
+
     while (true)
     {
-	basic_block src  = e->src;
+	//basic_block src  = e->src;
 	basic_block dest = e->dest;
 
-	if (!single (dest->succs))
-	    return e;
-	if (!single (dest->preds))
-	    return e;
-	if (!single (src->preds))
+	if (dest == post)
 	    return e;
 
-	edge succe = single_edge (dest->succs);
-	if (!single (succe->dest->preds))
+	if (e->flags & EDGE_DFS_BACK)
+	    return source;
+
+	if (is_conditional_p (dest))
+	{
+	    gimple *stmt = gsi_stmt (gsi_last_bb (e->dest));
+	    expanded_location yloc = expand_location (gimple_location (stmt));
+
+	    if (yloc.line > xloc.line)
+		return source;
+	    if (yloc.line < xloc.line)
+		return e;
+	    if (yloc.column > xloc.column)
+		return source;
 	    return e;
+	}
+
+	if (EDGE_COUNT (e->dest->succs) == 0)
+	    return source;
+
+	//if (!single (dest->succs))
+	//    return e;
+	if (!single (dest->preds))
+	    return source;
+	//if (!single (src->preds))
+	//    return e;
+
+	//printf ("single edge (%d): ", e->src->index);
+	//for (edge e : dest->succs)
+	//    printf ("  %d->%d ", e->src->index, e->dest->index);
+	//printf ("\n");
+
+
+	edge succe = single_edge (dest->succs);
+	if (!succe)
+	    return source;
+	//if (!single (succe->dest->preds))
+	//    return e;
 
 	e = succe;
     }
@@ -279,38 +342,29 @@ contract_edge_up (edge e, basic_block b = NULL)
     while (true)
     {
 	basic_block src  = e->src;
-	basic_block dest = e->dest;
+	//basic_block dest = e->dest;
 
 	if (src == b)
 	    return e;
 
+	if (edge_conditional_p (e))
+	    return e;
+
 	if (!single (src->preds))
 	    return e;
-	if (!single (src->succs))
-	    return e;
-	if (!single (dest->preds))
-	    return e;
+
+	//if (!single (e->dest->preds))
+	//    return e;
+
+	//if (!single (src->preds))
+	//    return e;
+	//if (!single (src->succs))
+	//    return e;
+	//if (!single (dest->preds))
+	//    return e;
 
 	e = single_edge (src->preds);
     }
-}
-
-/* Returns true if this is a conditional node, i.e. it has outgoing true &
-   false edges. */
-bool
-is_conditional_p (const basic_block b)
-{
-    if (single_succ_p (b))
-        return false;
-
-    unsigned t = 0;
-    unsigned f = 0;
-    for (edge e : b->succs)
-    {
-        t |= (e->flags & EDGE_TRUE_VALUE);
-        f |= (e->flags & EDGE_FALSE_VALUE);
-    }
-    return t && f;
 }
 
 /* Scan upwards and find the ancestors of a node, stopping at post.
@@ -330,13 +384,26 @@ scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
 	return;
     for (int n = 0; n >= 0; n--)
     {
-	for (edge e : stack[n]->preds)
+	printf ("preds(%d)\n", stack[n]->index);
+	auto preds = stack[n]->preds;
+
+	while (single (preds) && !edge_conditional_p (single_edge (preds)))
+	    preds = single_edge (preds)->src->preds;
+
+	for (edge e : preds)
 	{
-	    basic_block src = contract_edge_up (e, post)->src;
-	    if (bitmap_bit_p (ancestors, src->index))
+	    //basic_block src = contract_edge_up (e, post)->src;
+	    //printf ("    contract-up %d -> %d\n", e->src->index, src->index);
+
+	    basic_block src = e->src;
+
+	    /* TODO: edge-up must probably get source-treatment */
+	    if (bitmap_bit_p (ancestors, e->src->index))
 		continue;
-	    if (!bitmap_bit_p (G, src->index))
+
+	    if (!bitmap_bit_p (G, e->src->index))
 		continue;
+
 	    bitmap_set_bit (ancestors, src->index);
 	    stack[n++] = src;
 	}
@@ -470,6 +537,7 @@ masking_vector (
 }
 
 /* TODO: doc */
+/* TODO: check flags->DFS_BACK for loop edges */
 int
 scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 	   sbitmap expr)
@@ -489,7 +557,10 @@ scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 	    if (e->dest == post)
 		continue;
 
-	    basic_block dest = contract_edge (e)->dest;
+	    basic_block dest = contract_edge (e, post)->dest;
+	    printf ("contracted %d -> %d\n", e->dest->index, dest->index);
+	    //basic_block dest = e->dest;
+
 	    if (dest == post)
 		continue;
 	    if (!is_conditional_p (dest))
@@ -517,9 +588,12 @@ neighborhood (basic_block *blocks, int nblocks, const sbitmap G)
     {
 	for (edge e : blocks[i]->succs)
 	{
+
+	    printf ("%d contracts to %d\n", e->dest->index, contract_edge (e)->dest->index);
 	    e = contract_edge (e);
 	    if (bitmap_bit_p (G, e->dest->index))
 		continue;
+	    // TODO: check-in-set before insert
 	    out[n++] = e->dest;
 	}
     }
@@ -541,7 +615,14 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     bitmap_clear (expr);
     bitmap_clear (reachable);
 
+    printf ("\n\n find-first (%d)\n", pre->index);
     const int nblocks = scan_down (pre, post, blocks, ctx.maxsize, expr);
+	printf ("G: ");
+	for (int i = 0; i < nblocks; i++)
+	    printf ("%d ", blocks[i]->index);
+	printf("\n");
+
+
     if (nblocks == 1)
 	return nblocks;
 
@@ -549,11 +630,23 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     bitmap_copy (reachable, expr);
     basic_block *neighborhood = blocks + nblocks;
     basic_block *stack = neighborhood + nsize;
+
+	printf ("N(G): ");
+	for (int i = 0; i < nsize; i++)
+	    printf ("%d ", neighborhood[i]->index);
+	printf("\n");
+
     for (int i = 0; i < nsize; i++)
     {
 	bitmap_clear (ancestors);
-	for (edge e : neighborhood[i]->preds)
+	for (edge e : neighborhood[i]->preds) // TODO: must preds be filtered on conditional?
 	    scan_up (ancestors, e->src, pre, reachable, stack);
+
+	printf ("  A(%d): ", neighborhood[i]->index);
+	for (int i = 0; i < nblocks; i++)
+	    if (bitmap_bit_p (ancestors, blocks[i]->index))
+		printf ("%d ", blocks[i]->index);
+	printf ("\n");
 	bitmap_and (expr, expr, ancestors);
     }
 
@@ -664,13 +757,7 @@ collect_conditions (conds_ctx& ctx, basic_block entry, basic_block exit)
 	}
 
 	const int nterms = find_first_conditional (ctx, pre, post);
-
 	sort_terms (ctx.blocks, nterms, ctx.G1);
-
-	//printf ("B: ");
-	//for (int i = 0; i < nterms; i++)
-	//    printf ("%d ", ctx.blocks[i]->index);
-	//printf("\n");
 
 	// TODO: mark and recover
 	// TODO: what happens to N(G)->preds on destructors? Need to be
@@ -679,6 +766,12 @@ collect_conditions (conds_ctx& ctx, basic_block entry, basic_block exit)
 	    ctx.mark (ctx.blocks[i]);
 
 	// for single-term exprs
+
+	printf ("B: ");
+	for (int i = 0; i < nterms; i++)
+	    printf ("%d ", ctx.blocks[i]->index);
+	printf("\n");
+	//std::sort (ctx.blocks, ctx.blocks + nterms, index_lt);
 	basic_block last = ctx.blocks[nterms - 1];
 	basic_block t = edge_with (last->succs, EDGE_TRUE_VALUE)->dest;
 	basic_block f = edge_with (last->succs, EDGE_FALSE_VALUE)->dest;
@@ -771,6 +864,9 @@ find_conditions (
     int *sizes,
     int maxsize)
 {
+//    if (strcmp (current_function_name (), "devt_from_devnum") != 0)
+//	return 0;
+
     record_loop_exits ();
     bool free_dom = false;
     bool free_post_dom = false;
@@ -786,16 +882,23 @@ find_conditions (
 	free_dom = true;
     }
 
-    printf ("digraph {\n");
+    printf ("digraph { // %s\n", current_function_name ());
     basic_block bb;
     FOR_EACH_BB_FN (bb, cfun)
     {
         for (edge e : bb->succs)
         {
-            printf("    A%d->A%d;\n", e->src->index, e->dest->index);
+            const char *label = e->flags & EDGE_TRUE_VALUE ? "[label=true]" : e->flags & EDGE_FALSE_VALUE ? "[label=false]" : "";
+            printf("    A%d->A%d %s;\n", e->src->index, e->dest->index, label);
         }
     }
-    printf("}\n");
+    printf("}\n\n");
+
+    //FOR_EACH_BB_FN (bb, cfun)
+    //{
+    //    gimple_dump_bb (stdout, bb, 0, TDF_GRAPH | TDF_LINENO);
+    //    printf ("\n\n");
+    //}
 
     conds_ctx ctx (maxsize);
     ctx.blocks = blocks;
@@ -803,6 +906,8 @@ find_conditions (
     ctx.maxsize = maxsize;
     sizes[0] = sizes[1] = 0;
     collect_conditions (ctx, entry, exit);
+
+    //gcc_assert (strcmp (current_function_name (), "devt_from_devnum") != 0);
 
     /* Partial sum.  */
     for (int i = 0; i < ctx.exprs; ++i)

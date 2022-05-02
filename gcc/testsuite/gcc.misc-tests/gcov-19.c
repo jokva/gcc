@@ -633,10 +633,8 @@ mcdc018b (int a, int b, int c)
     int n;
     while (a) /* conditions(2/2) */
     {
-	/*
-	 * else block does not make a difference for the problem, but ensures
-	 * loop termination
-	 */
+	/* else block does not make a difference for the problem, but ensures
+	   loop termination. */
 	if (b) /* conditions(2/2) */
 	    n = c ? 0 : 0; // does not show up in CFG (embedded in the block)
 	else
@@ -738,7 +736,8 @@ dest:
 int __sigsetjmp ();
 
 void
-mcdc021c () {
+mcdc021c ()
+{
   while (x) /* conditions(0/2) true(0) false(0)*/
 	    /* conditions(end) */
      __sigsetjmp ();
@@ -761,6 +760,27 @@ mcdc022a (int a, int b)
 	    b = inv(b);
 	}
     }
+}
+
+int
+mcdc023a (int a)
+{
+    unsigned maj, min, offset;
+    int devt;
+    char *p, dummy;
+
+    if (a == -x || a == x)
+    {
+	x = a * 2;
+	if (x != a / 10 || x != a % 10)
+	    return 0;
+    } else {
+	devt = id(a);
+	if (*p)
+	    return 0;
+    }
+
+    return devt;
 }
 
 int main ()
