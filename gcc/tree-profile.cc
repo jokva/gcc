@@ -96,10 +96,9 @@ struct conds_ctx
        gcov output and the parameter to gcov_counter_alloc (). */
     int exprs;
 
-    /* Bitmap of the processed blocks - bit n set means basic_block->index has
-       been processed as a first-in-expression block.  This effectively stops
-       loop edges from being taken and subgraphs re-processed. */
-    auto_sbitmap seen;
+    /* Bitmap of the processed blocks.  Bit n set means basic_block->index has
+       been processed either explicitly or as a part of an expression. */
+    auto_sbitmap marks;
 
     /* Pre-allocate bitmaps for per-function book keeping.  This is pure
        instance reuse and the bitmaps carries no data between function calls. */
@@ -108,17 +107,17 @@ struct conds_ctx
     auto_sbitmap G2;
 
     explicit conds_ctx (unsigned size) noexcept (true) : maxsize (0), exprs (0),
-    seen (size), expr (size), G1 (size), G2 (size)
+    marks(size), expr (size), G1 (size), G2 (size)
     {
-	bitmap_clear (seen);
+	bitmap_clear (marks);
     }
 
-    /* Commit the buffered (n-2)-term expression including outcome nodes. */
+    /* Commit the buffered n-term expression including outcome nodes. */
     void commit (int nblocks) noexcept (true)
     {
-	blocks  += nblocks;
-	*sizes  += nblocks;
-	maxsize -= nblocks;
+	blocks  += nblocks + 2;
+	*sizes  += nblocks + 2;
+	maxsize -= nblocks + 2;
 
 	exprs++;
 	sizes++;
@@ -129,7 +128,17 @@ struct conds_ctx
        loops, gotos. */
     void mark (basic_block b) noexcept (true)
     {
-	bitmap_set_bit (seen, b->index);
+	gcc_assert (!bitmap_bit_p (marks, b->index));
+	bitmap_set_bit (marks, b->index);
+    }
+
+    void mark (basic_block *blocks, int nblocks) noexcept (true)
+    {
+	for (int i = 0; i < nblocks; i++)
+	{
+	    gcc_assert (!bitmap_bit_p (marks, blocks[i]->index));
+	    mark (blocks[i]);
+	}
     }
 };
 
@@ -176,13 +185,6 @@ is_conditional_p (const basic_block b)
         f |= (e->flags & EDGE_FALSE_VALUE);
     }
     return t && f;
-}
-
-/* Compare block indices, function for using with std::sort */
-bool
-index_lt (const basic_block x, const basic_block y)
-{
-    return x->index < y->index;
 }
 
 /* Special cases of the single_*_p and single_*_edge functions in basic-block.h
@@ -319,15 +321,14 @@ contract_edge (edge e)
     }
 }
 
+/* This is the predecessor dual of contract_edge; it collapses the predecessor
+   blocks between two operands in a boolean expression. */
 edge
-contract_edge_up (edge e, basic_block b = NULL)
+contract_edge_up (edge e)
 {
     while (true)
     {
-	basic_block src  = e->src;
-
-	if (src == b)
-	    return e;
+	basic_block src = e->src;
 	if (edge_conditional_p (e))
 	    return e;
 	if (!single (src->preds))
@@ -661,67 +662,45 @@ void sort_terms (basic_block *blocks, int nblocks, sbitmap marks)
       (contracted) condition edges.
    2. This creates a cut C = (G, G'); find the neighborhood N(G).
    3. For every node in N(G), follow the edges across the cut and collect all
-      ancestors (that are also in G, that is, don't follow edges outside of G).
+      ancestors (that are also in G).
    4. The intersection of all these ancestor sets is the boolean expression B
       that starts in root.
-   5. Repeat using the two outcomes (successors of B) as new root nodes.
 
-   It is not guaranteed to find nodes in the order of the expression, i.e. it
-   might find (a || b) && c as [a c b], so the output is sorted by
-   basic_block->index.  This assumes A->index < B->index means A is before B in
-   the expression syntactically. */
+   Walking is not guaranteed to find nodes in the order of the expression, it
+   might find (a || b) && c as [a c b]. */
 void
-collect_conditions (conds_ctx& ctx, basic_block entry, basic_block exit)
+collect_conditions (conds_ctx& ctx, basic_block block)
 {
-    (void) index_lt;
-    basic_block pre;
-    basic_block post;
-    for (pre = entry ;; pre = post)
+    if (bitmap_bit_p (ctx.marks, block->index))
+	return;
+
+    if (!is_conditional_p (block))
     {
-	if (pre == exit)
-	    break;
-	if (bitmap_bit_p (ctx.seen, pre->index))
-	    break;
+	ctx.mark (block);
+	return;
+    }
 
-	ctx.mark (pre);
-	post = get_immediate_dominator (CDI_POST_DOMINATORS, pre);
-	if (!is_conditional_p (pre))
-	{
-	    for (edge e : pre->succs)
-		collect_conditions (ctx, e->dest, post);
-	    continue;
-	}
+    basic_block post = get_immediate_dominator (CDI_POST_DOMINATORS, block);
+    const int nterms = find_first_conditional (ctx, block, post);
+    sort_terms (ctx.blocks, nterms, ctx.G1);
+    ctx.mark (ctx.blocks, nterms);
 
-	const int nterms = find_first_conditional (ctx, pre, post);
-	sort_terms (ctx.blocks, nterms, ctx.G1);
+    basic_block last = ctx.blocks[nterms - 1];
+    basic_block t = edge_with (last->succs, EDGE_TRUE_VALUE)->dest;
+    basic_block f = edge_with (last->succs, EDGE_FALSE_VALUE)->dest;
+    ctx.blocks[nterms+0] = t;
+    ctx.blocks[nterms+1] = f;
 
-	// TODO: mark and recover
-	// TODO: what happens to N(G)->preds on destructors? Need to be
-	// contracted?
-	for (int i = 0; i < nterms; i++)
-	    ctx.mark (ctx.blocks[i]);
-
-	// for single-term exprs
-	basic_block last = ctx.blocks[nterms - 1];
-	basic_block t = edge_with (last->succs, EDGE_TRUE_VALUE)->dest;
-	basic_block f = edge_with (last->succs, EDGE_FALSE_VALUE)->dest;
-	ctx.blocks[nterms+0] = t;
-	ctx.blocks[nterms+1] = f;
-
-	if (size_t (nterms) <= CONDITIONS_MAX_TERMS)
-	{
-	    ctx.commit (nterms+2);
-	}
-	else
-	{
-	    location_t loc = gimple_location (gsi_stmt (gsi_last_bb (pre)));
-	    warning_at (loc, OPT_Wcoverage_too_many_conditions,
-			"Too many conditions (found %d); giving up coverage",
-			nterms);
-	}
-
-	collect_conditions (ctx, t, post);
-	collect_conditions (ctx, f, post);
+    if (size_t (nterms) <= CONDITIONS_MAX_TERMS)
+    {
+	ctx.commit (nterms);
+    }
+    else
+    {
+	location_t loc = gimple_location (gsi_stmt (gsi_last_bb (block)));
+	warning_at (loc, OPT_Wcoverage_too_many_conditions,
+		    "Too many conditions (found %d); giving up coverage",
+		    nterms);
     }
 }
 
@@ -809,12 +788,31 @@ find_conditions (
 	free_dom = true;
     }
 
+    //printf ("digraph { // %s\n", current_function_name ());
+    //basic_block bb;
+    //FOR_EACH_BB_FN (bb, cfun)
+    //{
+    //    for (edge e : bb->succs)
+    //        printf ("    A%d -> A%d;\n", e->src->index, e->dest->index);
+    //}
+    //printf ("}\n");
+
     conds_ctx ctx (maxsize);
     ctx.blocks = blocks;
     ctx.sizes = sizes + 1;
     ctx.maxsize = maxsize;
     sizes[0] = sizes[1] = 0;
-    collect_conditions (ctx, entry, exit);
+
+    auto_vec<basic_block, 32> v;
+    v.reserve (n_basic_blocks_for_fn (cfun));
+
+    // TODO: problem with this iteration: complicated control flow means this starts in-middle-of expr?
+    basic_block bb;
+    FOR_BB_BETWEEN (bb, entry, exit, next_bb)
+	v.safe_push (bb);
+
+    for (auto b : v)
+	collect_conditions (ctx, b);
 
     /* Partial sum.  */
     for (int i = 0; i < ctx.exprs; ++i)
