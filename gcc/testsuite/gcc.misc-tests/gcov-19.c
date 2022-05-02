@@ -763,20 +763,17 @@ mcdc022a (int a, int b)
 }
 
 int
-mcdc023a (int a)
+mcdc022b (int a)
 {
-    unsigned maj, min, offset;
     int devt;
-    char *p, dummy;
-
-    if (a == -x || a == x)
+    if (a) /* conditions(2/2) */
     {
 	x = a * 2;
-	if (x != a / 10 || x != a % 10)
+	if (x != a / 10 || x != a % 10) /* conditions(1/4) true(1) false(0 1) */
 	    return 0;
     } else {
-	devt = id(a);
-	if (*p)
+	devt = id (a);
+	if (devt) /* conditions(1/2) true(0) */
 	    return 0;
     }
 
@@ -948,6 +945,9 @@ int main ()
     mcdc020c (1, 1);
 
     mcdc022a (0, 0);
+
+    mcdc022b (0);
+    mcdc022b (1);
 
 }
 
