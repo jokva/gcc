@@ -63,6 +63,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "cfgloop.h"
 
 #include "tree.h"
+#include "gimple-pretty-print.h"
 
 static GTY(()) tree gcov_type_node;
 static GTY(()) tree tree_interval_profiler_fn;
@@ -128,11 +129,17 @@ struct conds_ctx
        loops, gotos. */
     void mark (basic_block b) noexcept (true)
     {
+	gcc_assert (!bitmap_bit_p (marks, b->index));
 	bitmap_set_bit (marks, b->index);
     }
 
     void mark (basic_block *blocks, int nblocks) noexcept (true)
     {
+	printf ("marking from %d: ", blocks[0]->index);
+	for (int i = 1; i < nblocks; i++)
+	    printf ("%d ", blocks[i]->index);
+	printf ("\n");
+
 	for (int i = 0; i < nblocks; i++)
 	    mark (blocks[i]);
     }
@@ -484,6 +491,7 @@ masking_vector (
 		for (edge e : q->preds)
 		{
 		    basic_block b = contract_edge_up (e)->src;
+		    // TODO: eliminate this
 		    if (b->index >= bot->index)
 			continue;
 
@@ -525,6 +533,8 @@ scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 	    if (!is_conditional_p (dest))
 		continue;
 	    if (bitmap_bit_p (expr, dest->index))
+		continue;
+	    if (e->flags & EDGE_DFS_BACK)
 		continue;
 
 	    bitmap_set_bit (expr, dest->index);
@@ -573,6 +583,12 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     bitmap_clear (reachable);
 
     const int nblocks = scan_down (pre, post, blocks, ctx.maxsize, expr);
+
+    printf ("G: ");
+    for (int i = 0; i < nblocks; i++)
+	printf ("%d ", blocks[i]->index);
+    printf ("\n");
+
     if (nblocks == 1)
 	return nblocks;
 
@@ -580,6 +596,11 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     bitmap_copy (reachable, expr);
     basic_block *neighborhood = blocks + nblocks;
     basic_block *stack = neighborhood + nsize;
+
+    printf ("N(G): ");
+    for (int i = 0; i < nsize; i++)
+	printf ("%d ", neighborhood[i]->index);
+    printf ("\n");
 
     for (int i = 0; i < nsize; i++)
     {
@@ -606,11 +627,6 @@ emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2)
     gassign *bitw;
     gimple *write;
 
-    /* Insert lhs = op1 <bit-op> op2.
-
-       The operands are assumed to be local accumulators or already SSA'd (and
-       not referencing globals) and don't need atomic reads anymore.
-     */
     tmp = make_temp_ssa_name (gcov_type_node, NULL, "__conditions_tmp");
     read = gimple_build_assign (tmp, op1);
     tmp = make_temp_ssa_name (gcov_type_node, NULL, "__conditions_tmp");
@@ -645,7 +661,7 @@ void visit (basic_block b, basic_block *blocks, int nblocks, sbitmap marks, auto
 /* Sort the blocks by term in the expression; for the expression (a || (b && c)
    || d) the blocks should be [a b c d].  The algorithm is a simplified
    depth-first search topological sort. */
-void sort_terms (basic_block *blocks, int nblocks, sbitmap marks, bool contract = true)
+void sort_terms (basic_block *blocks, int nblocks, sbitmap marks, bool contract = false)
 {
     auto_vec<basic_block, 32> L;
     L.reserve (nblocks);
@@ -662,6 +678,71 @@ void sort_terms (basic_block *blocks, int nblocks, sbitmap marks, bool contract 
 //TODO(monday) eliminate ->index comparisons
 }
 
+void sort (basic_block *blocks, int nblocks)
+{
+    if (nblocks == 1)
+	return;
+
+    gcc_assert (nblocks > 0);
+    auto_vec<basic_block> S, L;
+    S.safe_push (blocks[0]);
+
+    // TODO: find-max
+    int maxblocks = n_basic_blocks_for_fn (cfun);
+
+    auto_sbitmap edges (maxblocks * maxblocks);
+    bitmap_clear (edges);
+
+    #define rowcol(x, y) (((x) * maxblocks) + (y))
+    #define row(x) (rowcol((x), 0))
+
+    for (int i = 1; i < nblocks; i++)
+    {
+	for (edge e : blocks[i]->preds)
+	{
+	    if (e->flags & EDGE_DFS_BACK)
+		continue;
+	    bitmap_set_bit (edges, rowcol (blocks[i]->index, e->src->index));
+	}
+    }
+
+    while (!S.is_empty ())
+    {
+	basic_block n = S.pop();
+	L.safe_push (n);
+
+	debug_bitmap (edges);
+	for (edge e : n->succs)
+	{
+	    const int index = e->dest->index;
+	    if (!bitmap_bit_p (edges, rowcol (index, n->index)))
+		continue;
+	    if (!bitmap_bit_in_range_p (edges, row (index), row (index + 1) - 1))
+		S.safe_push (e->dest);
+	}
+    }
+
+    debug_bitmap (edges);
+    printf ("O (%d): ", nblocks);
+    for (int i = 0; i < nblocks; i++)
+	printf ("%d ", blocks[i]->index);
+    printf ("\n");
+    gcc_assert (bitmap_empty_p (edges));
+
+    #undef rowcol
+    #undef row
+
+    printf ("L (%d): ", int(L.length ()));
+    for (auto v : L)
+	printf ("%d ", v->index);
+    printf ("\n");
+
+    for (int i = 0; i < nblocks; i++)
+	blocks[i] = L[i];
+
+    gcc_assert (int (L.length ()) == nblocks);
+}
+
 /* Walk the CFG and collect conditionals.
 
    1. Collect a candidate set G by walking from the root following all
@@ -675,7 +756,7 @@ void sort_terms (basic_block *blocks, int nblocks, sbitmap marks, bool contract 
    Walking is not guaranteed to find nodes in the order of the expression, it
    might find (a || b) && c as [a c b]. */
 void
-collect_conditions (conds_ctx& ctx, basic_block block)
+collect_conditions (conds_ctx& ctx, basic_block block, const vec<basic_block>& v)
 {
     if (bitmap_bit_p (ctx.marks, block->index))
 	return;
@@ -688,12 +769,25 @@ collect_conditions (conds_ctx& ctx, basic_block block)
 
     basic_block post = get_immediate_dominator (CDI_POST_DOMINATORS, block);
     const int nblocks = find_first_conditional (ctx, block, post);
-    sort_terms (ctx.blocks, nblocks, ctx.G1);
-    ctx.mark (ctx.blocks, nblocks);
+    (void)sort_terms;
 
+    auto cmp = [&v](basic_block l, basic_block r) {
+	return std::find (v.begin(), v.end(), l) < std::find (v.begin(), v.end(), r);
+    };
+
+    std::sort (ctx.blocks, ctx.blocks + nblocks, cmp);
     basic_block last = ctx.blocks[nblocks - 1];
     basic_block t = edge_with (last->succs, EDGE_TRUE_VALUE)->dest;
     basic_block f = edge_with (last->succs, EDGE_FALSE_VALUE)->dest;
+
+    printf ("B: ");
+    for (int i = 0; i < nblocks; i++)
+	printf ("%d ", ctx.blocks[i]->index);
+    printf ("// t = %d, f = %d\n", t->index, f->index);
+
+    ctx.mark (ctx.blocks, nblocks);
+    printf("\n");
+
     ctx.blocks[nblocks+0] = t;
     ctx.blocks[nblocks+1] = f;
 
@@ -780,6 +874,7 @@ find_conditions (
     int maxsize)
 {
     record_loop_exits ();
+    mark_dfs_back_edges (cfun);
     bool free_dom = false;
     bool free_post_dom = false;
     if (!dom_info_available_p (CDI_POST_DOMINATORS))
@@ -812,8 +907,40 @@ find_conditions (
     bitmap_set_bit (ctx.marks, ENTRY_BLOCK);
     bitmap_set_bit (ctx.marks, EXIT_BLOCK);
 
+    printf ("digraph { // %s\n", current_function_name ());
+    for (basic_block b : v)
+    {
+	for (edge e : b->succs)
+	{
+	    printf ("    A%d -> A%d; // %u ", e->src->index, e->dest->index, e->flags);
+	    if (e->flags & EDGE_FALLTHRU)
+		printf ("fall-through ");
+	    if (e->flags & EDGE_ABNORMAL)
+		printf ("abnormal ");
+	    if (e->flags & EDGE_EH)
+		printf ("eh ");
+	    if (e->flags & EDGE_PRESERVE)
+		printf ("preserve ");
+	    if (e->flags & EDGE_FAKE)
+		printf ("fake ");
+	    if (e->flags & EDGE_DFS_BACK)
+		printf ("dfs-back ");
+	    if (e->flags & EDGE_IRREDUCIBLE_LOOP)
+		printf ("irreducible-loop ");
+	    if (e->flags & EDGE_TRUE_VALUE)
+		printf ("true-value ");
+	    if (e->flags & EDGE_FALSE_VALUE)
+		printf ("false-value ");
+	    if (e->flags & EDGE_EXECUTABLE)
+		printf ("executable ");
+	    printf ("\n");
+	}
+    }
+    printf ("}\n");
+
+    sort (v.address (), v.length ());
     for (auto b : v)
-	collect_conditions (ctx, b);
+	collect_conditions (ctx, b, v);
     gcc_assert (ctx.all_marked ());
 
     /* Partial sum.  */
