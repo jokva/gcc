@@ -770,14 +770,53 @@ mcdc022b (int a)
     {
 	x = a * 2;
 	if (x != a / 10 || x != a % 10) /* conditions(1/4) true(1) false(0 1) */
+					/* conditions(end) */
 	    return 0;
     } else {
 	devt = id (a);
 	if (devt) /* conditions(1/2) true(0) */
+		  /* conditions(end) */
 	    return 0;
     }
 
     return devt;
+}
+
+/* Adapted from linux arch/x86/events/intel/ds.c
+
+   It broken sorting so that the entry block was not the first node after
+   sorting. */
+void
+mcdc022c (int a)
+{
+    if (!a) /* conditions(2/2) */
+	return;
+
+    for (int i = 0; i < 5; i++) /* conditions(2/2) */
+    {
+	if (id (a + i) || inv (a - 1)) /* conditions(1/4) false(0 1) true(1) */
+				       /* conditions(end) */
+	    x = a + i;
+	if (inv (a)) /* conditions(1/2) true(0) */
+		     /* conditions(end) */
+	    break;
+    }
+}
+
+void
+mcdc022d (int a)
+{
+    int i;
+    for (i = 0; i < id (a); i++) /* conditions(1/2) false(0) */
+    {
+	if (!inv (a)) /* conditions(1/2) false(0)*/
+		      /* conditions(end) */
+	    break;
+    }
+
+    if (i < a) /* conditions(1/2) false(0) */
+	       /* conditions(end) */
+	x = a + 1;
 }
 
 int main ()
@@ -949,6 +988,10 @@ int main ()
     mcdc022b (0);
     mcdc022b (1);
 
+    mcdc022c (0);
+    mcdc022c (1);
+
+    mcdc022d (1);
 }
 
 /* { dg-final { run-gcov conditions { --conditions gcov-19.c } } } */

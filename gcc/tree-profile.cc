@@ -128,17 +128,19 @@ struct conds_ctx
        loops, gotos. */
     void mark (basic_block b) noexcept (true)
     {
-	gcc_assert (!bitmap_bit_p (marks, b->index));
 	bitmap_set_bit (marks, b->index);
     }
 
     void mark (basic_block *blocks, int nblocks) noexcept (true)
     {
 	for (int i = 0; i < nblocks; i++)
-	{
-	    gcc_assert (!bitmap_bit_p (marks, blocks[i]->index));
 	    mark (blocks[i]);
-	}
+    }
+
+    bool all_marked () const noexcept (true)
+    {
+	const_sbitmap cm = static_cast<const_sbitmap> (marks);
+	return bitmap_count_bits (marks) == SBITMAP_SIZE (cm);
     }
 };
 
@@ -620,15 +622,19 @@ emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2)
     gsi_insert_on_edge (e, write);
 }
 
-void visit (basic_block b, basic_block *blocks, int nblocks, sbitmap marks, auto_vec<basic_block, 32>& L)
+void visit (basic_block b, basic_block *blocks, int nblocks, sbitmap marks, auto_vec<basic_block, 32>& L, bool contract = true)
 {
+    (void)contract;
     if (bitmap_bit_p (marks, b->index))
 	return;
 
     bitmap_set_bit (marks, b->index);
     for (edge e : b->succs)
     {
-	e = contract_edge (e);
+	if (contract)
+	    e = contract_edge (e);
+
+	// TODO: tune this
 	if (index_of (e->dest, blocks, nblocks) == -1)
 	    continue;
 	visit (e->dest, blocks, nblocks, marks, L);
@@ -639,14 +645,14 @@ void visit (basic_block b, basic_block *blocks, int nblocks, sbitmap marks, auto
 /* Sort the blocks by term in the expression; for the expression (a || (b && c)
    || d) the blocks should be [a b c d].  The algorithm is a simplified
    depth-first search topological sort. */
-void sort_terms (basic_block *blocks, int nblocks, sbitmap marks)
+void sort_terms (basic_block *blocks, int nblocks, sbitmap marks, bool contract = true)
 {
     auto_vec<basic_block, 32> L;
     L.reserve (nblocks);
     bitmap_clear (marks);
 
     for (int i = 0; i < nblocks; i++)
-	visit (blocks[i], blocks, nblocks, marks, L);
+	visit (blocks[i], blocks, nblocks, marks, L, contract);
 
     gcc_assert (int (L.length ()) == nblocks);
     L.reverse ();
@@ -681,26 +687,26 @@ collect_conditions (conds_ctx& ctx, basic_block block)
     }
 
     basic_block post = get_immediate_dominator (CDI_POST_DOMINATORS, block);
-    const int nterms = find_first_conditional (ctx, block, post);
-    sort_terms (ctx.blocks, nterms, ctx.G1);
-    ctx.mark (ctx.blocks, nterms);
+    const int nblocks = find_first_conditional (ctx, block, post);
+    sort_terms (ctx.blocks, nblocks, ctx.G1);
+    ctx.mark (ctx.blocks, nblocks);
 
-    basic_block last = ctx.blocks[nterms - 1];
+    basic_block last = ctx.blocks[nblocks - 1];
     basic_block t = edge_with (last->succs, EDGE_TRUE_VALUE)->dest;
     basic_block f = edge_with (last->succs, EDGE_FALSE_VALUE)->dest;
-    ctx.blocks[nterms+0] = t;
-    ctx.blocks[nterms+1] = f;
+    ctx.blocks[nblocks+0] = t;
+    ctx.blocks[nblocks+1] = f;
 
-    if (size_t (nterms) <= CONDITIONS_MAX_TERMS)
+    if (size_t (nblocks) <= CONDITIONS_MAX_TERMS)
     {
-	ctx.commit (nterms);
+	ctx.commit (nblocks);
     }
     else
     {
 	location_t loc = gimple_location (gsi_stmt (gsi_last_bb (block)));
 	warning_at (loc, OPT_Wcoverage_too_many_conditions,
 		    "Too many conditions (found %d); giving up coverage",
-		    nterms);
+		    nblocks);
     }
 }
 
@@ -788,31 +794,27 @@ find_conditions (
 	free_dom = true;
     }
 
-    //printf ("digraph { // %s\n", current_function_name ());
-    //basic_block bb;
-    //FOR_EACH_BB_FN (bb, cfun)
-    //{
-    //    for (edge e : bb->succs)
-    //        printf ("    A%d -> A%d;\n", e->src->index, e->dest->index);
-    //}
-    //printf ("}\n");
-
-    conds_ctx ctx (maxsize);
+    conds_ctx ctx (n_basic_blocks_for_fn (cfun));
     ctx.blocks = blocks;
     ctx.sizes = sizes + 1;
     ctx.maxsize = maxsize;
     sizes[0] = sizes[1] = 0;
 
     auto_vec<basic_block, 32> v;
-    v.reserve (n_basic_blocks_for_fn (cfun));
-
     // TODO: problem with this iteration: complicated control flow means this starts in-middle-of expr?
-    basic_block bb;
-    FOR_BB_BETWEEN (bb, entry, exit, next_bb)
-	v.safe_push (bb);
+    // TODO: quick push?
+    auto cmp = [](const_basic_block, const void *) {
+        return true;
+    };
+    v.safe_grow_cleared (n_basic_blocks_for_fn (cfun));
+    int n = dfs_enumerate_from (entry, 0, cmp, v.address (), v.length (), exit);
+    v.truncate (n);
+    bitmap_set_bit (ctx.marks, ENTRY_BLOCK);
+    bitmap_set_bit (ctx.marks, EXIT_BLOCK);
 
     for (auto b : v)
 	collect_conditions (ctx, b);
+    gcc_assert (ctx.all_marked ());
 
     /* Partial sum.  */
     for (int i = 0; i < ctx.exprs; ++i)
