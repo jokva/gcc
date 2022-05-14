@@ -678,69 +678,98 @@ void sort_terms (basic_block *blocks, int nblocks, sbitmap marks, bool contract 
 //TODO(monday) eliminate ->index comparisons
 }
 
+/* This is for-purpose representation of the CFG focused on the incoming edges
+   and removing some noise from the sorting function.  Kahn's algorithm sorts
+   by removing edges which we do not want to do in-place.  The underlying
+   structure is an N-by-N bitset matrix where each row is the destination node
+   and the columns are the source of the incoming edge, which allows for fast
+   edge removal and fast checking for more incoming
+   edges. */
+class cfg_edges {
+public:
+    cfg_edges (int nblocks) : count (nblocks), edges (nblocks * nblocks)
+    {
+	bitmap_clear (edges);
+    }
+
+    void
+    add (const edge e) noexcept (true)
+    {
+	if (!(e->flags & EDGE_DFS_BACK))
+	    bitmap_set_bit (edges, (e->dest->index * count) + e->src->index);
+    }
+
+    void
+    remove (const edge e) noexcept (true)
+    {
+	bitmap_clear_bit (edges, (e->dest->index * count) + e->src->index);
+    }
+
+    bool
+    member_p (const edge e) const noexcept (true)
+    {
+	return bitmap_bit_p (edges, (e->dest->index * count) + e->src->index);
+    }
+
+    bool
+    incoming_p (const basic_block dest) const noexcept (true)
+    {
+	const int x = dest->index;
+	const int fst = x * count;
+	const int lst = (x * count) + (count - 1);
+	return !bitmap_bit_in_range_p (edges, fst, lst);
+    }
+
+    void debug () {
+	debug_bitmap (edges);
+	gcc_assert (bitmap_empty_p (edges));
+    }
+
+private:
+    int count;
+    auto_sbitmap edges;
+};
+
+/* Topological sort a list of blocks so that left operands are before right
+   operands, including subexpressions.  Sorting on block index does not
+   guarantee this property and the syntactical order of terms is very important
+   to the condition coverage.  The sort is a modified Kahn's algorithm where
+   back edges are ignored (making the graph acyclic). */
 void sort (basic_block *blocks, int nblocks)
 {
     if (nblocks == 1)
 	return;
 
     gcc_assert (nblocks > 0);
-    auto_vec<basic_block> S, L;
+    auto_vec<basic_block, 32> S, L;
     S.safe_push (blocks[0]);
 
     // TODO: find-max
-    int maxblocks = n_basic_blocks_for_fn (cfun);
-
-    auto_sbitmap edges (maxblocks * maxblocks);
-    bitmap_clear (edges);
-
-    #define rowcol(x, y) (((x) * maxblocks) + (y))
-    #define row(x) (rowcol((x), 0))
-
+    cfg_edges edges (n_basic_blocks_for_fn (cfun));
     for (int i = 1; i < nblocks; i++)
-    {
 	for (edge e : blocks[i]->preds)
-	{
-	    if (e->flags & EDGE_DFS_BACK)
-		continue;
-	    bitmap_set_bit (edges, rowcol (blocks[i]->index, e->src->index));
-	}
-    }
+	    edges.add (e);
 
     while (!S.is_empty ())
     {
 	basic_block n = S.pop();
 	L.safe_push (n);
-
-	debug_bitmap (edges);
 	for (edge e : n->succs)
 	{
-	    const int index = e->dest->index;
-	    if (!bitmap_bit_p (edges, rowcol (index, n->index)))
+	    basic_block dest = e->dest;
+	    if (!edges.member_p (e))
 		continue;
-	    if (!bitmap_bit_in_range_p (edges, row (index), row (index + 1) - 1))
-		S.safe_push (e->dest);
+
+	    edges.remove (e);
+	    if (edges.incoming_p (dest))
+		S.safe_push (dest);
 	}
     }
 
-    debug_bitmap (edges);
-    printf ("O (%d): ", nblocks);
-    for (int i = 0; i < nblocks; i++)
-	printf ("%d ", blocks[i]->index);
-    printf ("\n");
-    gcc_assert (bitmap_empty_p (edges));
-
-    #undef rowcol
-    #undef row
-
-    printf ("L (%d): ", int(L.length ()));
-    for (auto v : L)
-	printf ("%d ", v->index);
-    printf ("\n");
-
+    edges.debug();
+    gcc_assert (int (L.length ()) == nblocks);
     for (int i = 0; i < nblocks; i++)
 	blocks[i] = L[i];
-
-    gcc_assert (int (L.length ()) == nblocks);
 }
 
 /* Walk the CFG and collect conditionals.
