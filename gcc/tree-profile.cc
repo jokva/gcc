@@ -638,44 +638,20 @@ emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2)
     gsi_insert_on_edge (e, write);
 }
 
-void visit (basic_block b, basic_block *blocks, int nblocks, sbitmap marks, auto_vec<basic_block, 32>& L, bool contract = true)
+//TODO(monday) eliminate ->index comparisons
+/* See sort. */
+void
+sort_visit (basic_block b, vec<basic_block>& L, sbitmap marks)
 {
-    (void)contract;
     if (bitmap_bit_p (marks, b->index))
 	return;
 
-    bitmap_set_bit (marks, b->index);
     for (edge e : b->succs)
-    {
-	if (contract)
-	    e = contract_edge (e);
+	if (!(e->flags & EDGE_DFS_BACK))
+	    sort_visit (e->dest, L, marks);
 
-	// TODO: tune this
-	if (index_of (e->dest, blocks, nblocks) == -1)
-	    continue;
-	visit (e->dest, blocks, nblocks, marks, L);
-    }
-    L.safe_push (b);
-}
-
-/* Sort the blocks by term in the expression; for the expression (a || (b && c)
-   || d) the blocks should be [a b c d].  The algorithm is a simplified
-   depth-first search topological sort. */
-void sort_terms (basic_block *blocks, int nblocks, sbitmap marks, bool contract = false)
-{
-    auto_vec<basic_block, 32> L;
-    L.reserve (nblocks);
-    bitmap_clear (marks);
-
-    for (int i = 0; i < nblocks; i++)
-	visit (blocks[i], blocks, nblocks, marks, L, contract);
-
-    gcc_assert (int (L.length ()) == nblocks);
-    L.reverse ();
-    for (int i = 0; i < nblocks; i++)
-	blocks[i] = L[i];
-
-//TODO(monday) eliminate ->index comparisons
+    bitmap_set_bit (marks, b->index);
+    L.quick_push (b);
 }
 
 /* Topological sort the list of blocks so that left operands are before right
