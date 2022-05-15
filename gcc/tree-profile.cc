@@ -385,6 +385,31 @@ scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
     }
 }
 
+struct outcomes {
+    basic_block t = NULL;
+    basic_block f = NULL;
+
+    operator bool () const noexcept (true)
+    {
+	return t && f;
+    }
+};
+
+outcomes
+conditional_succs (const basic_block b)
+{
+    outcomes c;
+    for (edge e : b->succs)
+    {
+	if (e->flags & EDGE_TRUE_VALUE)
+	    c.t = contract_edge (e)->dest;
+	if (e->flags & EDGE_FALSE_VALUE)
+	    c.f = contract_edge (e)->dest;
+    }
+
+    gcc_assert ((c.t && c.f) || (!c.t && !c.f));
+    return c;
+}
 
 /* Compute the masking vector.
 
@@ -394,12 +419,7 @@ scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
    This means we can find the limits, the last term in previous subexpressions
    by following the edges that short circuit to the same outcome.
 
-   First the limit of the expression is found as the other outcome of the
-   source of a short circuit.  The masked nodes are the ancestors of the limit
-   in the CFG where the short circuit and masking nodes are considered without
-   predecessors.  && and || isomorphic by inverting conditions and outcomes and
-   are solved by the same algorithm.  In the example indices [0] and [1] denote
-   boolean values.
+TODO: doc algo
 
    In the simplest case a || b:
 
@@ -450,9 +470,9 @@ masking_vector (
     gcov_type_unsigned *masks)
 {
     const unsigned flags[] = {
-        EDGE_TRUE_VALUE,
-        EDGE_FALSE_VALUE,
-        EDGE_TRUE_VALUE,
+	EDGE_TRUE_VALUE,
+	EDGE_FALSE_VALUE,
+	EDGE_TRUE_VALUE,
     };
 
     auto_sbitmap marks (n_basic_blocks_for_fn (cfun));
@@ -477,21 +497,14 @@ masking_vector (
 	    if (i1 > i2)
 		continue;
 
-	    //printf ("e1: %d -> %d\n", e1->src->index, e1->dest->index);
-	    //printf ("e2: %d -> %d\n", e2->src->index, e2->dest->index);
-	    //printf ("i1: %d, i2: %d, flag: %u\n", i1, i2, flags[k]);
-
 	    bitmap_clear (marks);
             basic_block top = e1->src;
-            basic_block bot = e2->src;
-	    (void) top;
-	    (void) bot;
 
-	    edge lim = contract_edge (edge_with (top->succs, flags[k+1]));
-	    bitmap_set_bit (marks, blocks[i]->index);
-	    bitmap_set_bit (marks, lim->dest->index);
+	    outcomes out = conditional_succs (top);
 
-	    //printf ("queue.add (%d)\n", top->index);
+	    bitmap_set_bit (marks, out.t->index);
+	    bitmap_set_bit (marks, out.f->index);
+
 	    queue.truncate (0);
 	    queue.safe_push (top);
 
@@ -503,32 +516,16 @@ masking_vector (
 		    continue;
 
 		const int index = index_of (q, blocks, nblocks);
-		//printf ("\n%d = queue.pop (); index = %d\n", q->index, index);
 		if (index == -1)
 		    continue;
 
+		outcomes succs = conditional_succs (q);
+		if (!succs)
+		    continue;
 
-		edge t = NULL, f = NULL;
-		for (edge e : q->succs)
+		if (bitmap_bit_p (marks, succs.t->index) &&
+		    bitmap_bit_p (marks, succs.f->index))
 		{
-		    e = contract_edge (e);
-		    if (e->flags & EDGE_TRUE_VALUE)
-			t = e;
-		    if (e->flags & EDGE_FALSE_VALUE)
-			f = e;
-		}
-
-		//debug_bitmap (marks);
-		if (!t) continue;
-		if (!f) continue;
-
-		//printf ("  %d.t => %d\n", q->index, t->dest->index);
-		//printf ("  %d.f => %d\n", q->index, f->dest->index);
-
-		if (bitmap_bit_p (marks, t->dest->index) &&
-		    bitmap_bit_p (marks, f->dest->index))
-		{
-		    //printf ("  masking %d | %d\n", index, q->index);
 		    gcov_type_unsigned bit = gcov_type_unsigned (1) << index;
 		    masks[m] |= bit;
 		    bitmap_set_bit (marks, q->index);
@@ -547,75 +544,8 @@ masking_vector (
 		    }
 		}
 	    }
-
-	    //printf ("\n--\n\n");
 	}
     }
-
-
-
-
-    //const unsigned flags[] = {
-    //    EDGE_TRUE_VALUE,
-    //    EDGE_FALSE_VALUE,
-    //    EDGE_TRUE_VALUE,
-    //};
-
-    //auto_vec<basic_block, 32> queue;
-
-    //// Start at the 2nd block; the first block cannot be an outcome.
-    //for (int i = 1; i < nblocks; i++)
-    //{
-    //    for (int k = 0; k < 2; k++)
-    //    for (edge e1 : blocks[i]->preds)
-    //    for (edge e2 : blocks[i]->preds)
-    //    {
-    //        // Order the sources so that e1 is a term left of e2. This also
-    //        // guards against incoming loop edges
-    //        if (e1->src->index >= e2->src->index)
-    //    	continue;
-
-    //        if (!(e1->flags & e2->flags & flags[k]))
-    //    	continue;
-
-    //        const int i1 = index_of (e1->src, blocks, nblocks);
-    //        const int i2 = index_of (e2->src, blocks, nblocks);
-    //        if (i1 == -1 || i2 == -1)
-    //    	continue;
-
-    //        basic_block top = e1->src;
-    //        basic_block bot = e2->src;
-    //        edge lim = edge_with (top->succs, flags[k+1]);
-
-    //        queue.truncate (0);
-    //        queue.quick_push (contract_edge (lim)->dest);
-
-    //        const int m = i2*2 + k;
-    //        while (!queue.is_empty ())
-    //        {
-    //    	basic_block q = queue.pop ();
-    //    	for (edge e : q->preds)
-    //    	{
-    //    	    basic_block b = contract_edge_up (e)->src;
-    //    	    // TODO: eliminate this
-    //    	    if (b->index >= bot->index)
-    //    		continue;
-
-    //    	    const int index = index_of (b, blocks, nblocks);
-    //    	    if (index == -1)
-    //    		continue;
-
-    //    	    gcov_type_unsigned bit = gcov_type_unsigned (1) << index;
-    //    	    if (masks[m] & bit)
-    //    		continue;
-
-    //    	    masks[m] |= bit;
-    //    	    if (b != top)
-    //    		queue.safe_push (b);
-    //    	}
-    //        }
-    //    }
-    //}
 }
 
 /* TODO: doc */
