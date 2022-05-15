@@ -165,6 +165,7 @@ struct conds_ctx
    (especially for generated code) to exceed this limit.
  */
 #define CONDITIONS_MAX_TERMS (sizeof (gcov_type_unsigned) * BITS_PER_UNIT)
+#define EDGE_CONDITION (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE)
 
 /* Find the index of needle in blocks; return -1 if not found. This has two
    uses, sometimes for the index and sometimes for set member checks.  Sets are
@@ -203,8 +204,7 @@ is_conditional_p (const basic_block b)
    single-successor.
 
    [1] if this is not possible, these functions can be removed and replaced by
-       their basic-block.h cousins.
- */
+       their basic-block.h cousins. */
 bool
 single (const vec<edge, va_gc> *edges)
 {
@@ -233,22 +233,11 @@ single_edge (const vec<edge, va_gc> *edges)
     return NULL;
 }
 
-/* Get the first edge with flag set.  This is useful for selecting the
-   true/false edge. */
-edge
-edge_with (const vec<edge, va_gc> *edges, unsigned flag)
-{
-    for (edge e : edges)
-	if (e->flags & flag)
-	    return e;
-    return NULL;
-}
-
 /* Check if the edge is a conditional. */
 bool
 edge_conditional_p (const edge e)
 {
-    return e->flags & (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE);
+    return e->flags & EDGE_CONDITION;
 }
 
 /* Sometimes, for example with function calls and C++ destructors, the CFG gets
@@ -395,6 +384,8 @@ struct outcomes {
     }
 };
 
+/* Get the true/false successors of a basic block. If b is not a conditional
+   block both edges are NULL. */
 outcomes
 conditional_succs (const basic_block b)
 {
@@ -402,9 +393,9 @@ conditional_succs (const basic_block b)
     for (edge e : b->succs)
     {
 	if (e->flags & EDGE_TRUE_VALUE)
-	    c.t = contract_edge (e)->dest;
+	    c.t = (e)->dest;
 	if (e->flags & EDGE_FALSE_VALUE)
-	    c.f = contract_edge (e)->dest;
+	    c.f = (e)->dest;
     }
 
     gcc_assert ((c.t && c.f) || (!c.t && !c.f));
@@ -469,25 +460,20 @@ masking_vector (
     int nblocks,
     gcov_type_unsigned *masks)
 {
-    const unsigned flags[] = {
-	EDGE_TRUE_VALUE,
-	EDGE_FALSE_VALUE,
-	EDGE_TRUE_VALUE,
-    };
-
     auto_sbitmap marks (n_basic_blocks_for_fn (cfun));
     auto_vec<basic_block, 32> queue;
 
     for (int i = 1; i < nblocks; i++)
     {
-        for (int k = 0; k < 2; k++)
         for (edge e1 : blocks[i]->preds)
         for (edge e2 : blocks[i]->preds)
         {
 	    if (e1 == e2)
 		continue;
 
-	    if (!(e1->flags & e2->flags & flags[k]))
+	    const unsigned flag = e1->flags & e2->flags & (EDGE_CONDITION);
+	    const unsigned k = flag == EDGE_FALSE_VALUE ? 1 : 0;
+	    if (!flag)
 		continue;
 
 	    const int i1 = index_of (e1->src, blocks, nblocks);
@@ -498,15 +484,11 @@ masking_vector (
 		continue;
 
 	    bitmap_clear (marks);
-            basic_block top = e1->src;
-
-	    outcomes out = conditional_succs (top);
-
+	    outcomes out = conditional_succs (e1->src);
 	    bitmap_set_bit (marks, out.t->index);
 	    bitmap_set_bit (marks, out.f->index);
-
 	    queue.truncate (0);
-	    queue.safe_push (top);
+	    queue.safe_push (e1->src);
 
 	    const int m = i2*2 + k;
 	    while (!queue.is_empty())
@@ -514,11 +496,6 @@ masking_vector (
 		basic_block q = queue.pop ();
 		if (bitmap_bit_p (marks, q->index))
 		    continue;
-
-		const int index = index_of (q, blocks, nblocks);
-		if (index == -1)
-		    continue;
-
 		outcomes succs = conditional_succs (q);
 		if (!succs)
 		    continue;
@@ -526,6 +503,10 @@ masking_vector (
 		if (bitmap_bit_p (marks, succs.t->index) &&
 		    bitmap_bit_p (marks, succs.f->index))
 		{
+		    const int index = index_of (q, blocks, nblocks);
+		    if (index == -1)
+			continue;
+
 		    gcov_type_unsigned bit = gcov_type_unsigned (1) << index;
 		    masks[m] |= bit;
 		    bitmap_set_bit (marks, q->index);
@@ -750,8 +731,7 @@ collect_conditions (conds_ctx& ctx, basic_block block, const vec<basic_block>& v
     std::sort (ctx.blocks, ctx.blocks + nblocks, cmp);
 
     basic_block last = ctx.blocks[nblocks - 1];
-    basic_block t = edge_with (last->succs, EDGE_TRUE_VALUE)->dest;
-    basic_block f = edge_with (last->succs, EDGE_FALSE_VALUE)->dest;
+    outcomes out = conditional_succs (last);
 
     //printf ("B: ");
     //for (int i = 0; i < nblocks; i++)
@@ -761,8 +741,8 @@ collect_conditions (conds_ctx& ctx, basic_block block, const vec<basic_block>& v
 
     ctx.mark (ctx.blocks, nblocks);
 
-    ctx.blocks[nblocks+0] = t;
-    ctx.blocks[nblocks+1] = f;
+    ctx.blocks[nblocks+0] = out.t;
+    ctx.blocks[nblocks+1] = out.f;
 
     if (size_t (nblocks) <= CONDITIONS_MAX_TERMS)
     {
@@ -949,8 +929,7 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
     masking_vector (blocks, nblocks, masks.address ());
 
     /* The true/false target blocks are included in the nblocks set, but
-       their outgoing edges should not be instrumented.
-     */
+       their outgoing edges should not be instrumented. */
     gcc_assert (nblocks > 2);
 
     /* Add instructions for updating the function-local accumulators.  */
@@ -1058,6 +1037,7 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
 }
 
 #undef CONDITIONS_MAX_TERMS
+#undef EDGE_CONDITION
 
 /* Do initialization work for the edge profiler.  */
 

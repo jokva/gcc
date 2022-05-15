@@ -75,20 +75,8 @@ mcdc002c (int a, int b)
 void
 mcdc002d (int a, int b, int c)
 {
-    /*
-     * This is an odd case, and falls victim to trying to detect nested ifs.
-     *
-     * if (a) if (b) if (c) with no else is equivalent to if (a && b && c) and
-     * the CFGs are identical *unless* the else nodes are generated too. In the
-     * && expression, all false edges should go to the same else, but in the
-     * nested-if case they go to different elses.
-     *
-     * This can be surprising, and bad for MC/DC because non-independent
-     * conditionals masked by terms further-right can not be detected. If an
-     * else node is generated, this expression becomes a 3-term decision again.
-     */
-    if (a && b && c) /* conditions(suppress) conditions(4/6) false(0 2) */
-	/* conditions(end) */
+    if (a && b && c) /* conditions(4/6) false(0 2) */
+		     /* conditions(end) */
 	x = 1;
 }
 
@@ -204,7 +192,6 @@ mcdc005d (int a, int b, int c, int d)
     else
 	x = c + d;
 }
-
 
 /* nested conditionals */
 void
@@ -721,7 +708,7 @@ mcdc021a ()
 	;
 }
 
-/* Computed goto can give all sorts of problems, includ difficult path
+/* Computed goto can give all sorts of problems, including difficult path
    contractions. */
 void
 mcdc021b ()
