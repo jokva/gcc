@@ -450,23 +450,21 @@ masking_vector (
     gcov_type_unsigned *masks)
 {
     const unsigned flags[] = {
-	EDGE_TRUE_VALUE,
-	EDGE_FALSE_VALUE,
-	EDGE_TRUE_VALUE,
+        EDGE_TRUE_VALUE,
+        EDGE_FALSE_VALUE,
+        EDGE_TRUE_VALUE,
     };
 
+    auto_sbitmap marks (n_basic_blocks_for_fn (cfun));
     auto_vec<basic_block, 32> queue;
 
-    // Start at the 2nd block; the first block cannot be an outcome.
     for (int i = 1; i < nblocks; i++)
     {
-	for (int k = 0; k < 2; k++)
-	for (edge e1 : blocks[i]->preds)
-	for (edge e2 : blocks[i]->preds)
-	{
-	    // Order the sources so that e1 is a term left of e2. This also
-	    // guards against incoming loop edges
-	    if (e1->src->index >= e2->src->index)
+        for (int k = 0; k < 2; k++)
+        for (edge e1 : blocks[i]->preds)
+        for (edge e2 : blocks[i]->preds)
+        {
+	    if (e1 == e2)
 		continue;
 
 	    if (!(e1->flags & e2->flags & flags[k]))
@@ -476,40 +474,148 @@ masking_vector (
 	    const int i2 = index_of (e2->src, blocks, nblocks);
 	    if (i1 == -1 || i2 == -1)
 		continue;
+	    if (i1 > i2)
+		continue;
 
-	    basic_block top = e1->src;
-	    basic_block bot = e2->src;
-	    edge lim = edge_with (top->succs, flags[k+1]);
+	    //printf ("e1: %d -> %d\n", e1->src->index, e1->dest->index);
+	    //printf ("e2: %d -> %d\n", e2->src->index, e2->dest->index);
+	    //printf ("i1: %d, i2: %d, flag: %u\n", i1, i2, flags[k]);
 
+	    bitmap_clear (marks);
+            basic_block top = e1->src;
+            basic_block bot = e2->src;
+	    (void) top;
+	    (void) bot;
+
+	    edge lim = contract_edge (edge_with (top->succs, flags[k+1]));
+	    bitmap_set_bit (marks, blocks[i]->index);
+	    bitmap_set_bit (marks, lim->dest->index);
+
+	    //printf ("queue.add (%d)\n", top->index);
 	    queue.truncate (0);
-	    queue.quick_push (contract_edge (lim)->dest);
+	    queue.safe_push (top);
 
 	    const int m = i2*2 + k;
-	    while (!queue.is_empty ())
+	    while (!queue.is_empty())
 	    {
 		basic_block q = queue.pop ();
-		for (edge e : q->preds)
+		if (bitmap_bit_p (marks, q->index))
+		    continue;
+
+		const int index = index_of (q, blocks, nblocks);
+		//printf ("\n%d = queue.pop (); index = %d\n", q->index, index);
+		if (index == -1)
+		    continue;
+
+
+		edge t = NULL, f = NULL;
+		for (edge e : q->succs)
 		{
-		    basic_block b = contract_edge_up (e)->src;
-		    // TODO: eliminate this
-		    if (b->index >= bot->index)
-			continue;
+		    e = contract_edge (e);
+		    if (e->flags & EDGE_TRUE_VALUE)
+			t = e;
+		    if (e->flags & EDGE_FALSE_VALUE)
+			f = e;
+		}
 
-		    const int index = index_of (b, blocks, nblocks);
-		    if (index == -1)
-			continue;
+		//debug_bitmap (marks);
+		if (!t) continue;
+		if (!f) continue;
 
+		//printf ("  %d.t => %d\n", q->index, t->dest->index);
+		//printf ("  %d.f => %d\n", q->index, f->dest->index);
+
+		if (bitmap_bit_p (marks, t->dest->index) &&
+		    bitmap_bit_p (marks, f->dest->index))
+		{
+		    //printf ("  masking %d | %d\n", index, q->index);
 		    gcov_type_unsigned bit = gcov_type_unsigned (1) << index;
-		    if (masks[m] & bit)
-			continue;
-
 		    masks[m] |= bit;
-		    if (b != top)
-			queue.safe_push (b);
+		    bitmap_set_bit (marks, q->index);
+
+		    for (edge e : q->preds)
+		    {
+			e = contract_edge_up (e);
+			if (!edge_conditional_p (e))
+			    continue;
+			if (e->flags & EDGE_DFS_BACK)
+			    continue;
+			if (bitmap_bit_p (marks, e->src->index))
+			    continue;
+
+			queue.safe_push (e->src);
+		    }
 		}
 	    }
+
+	    //printf ("\n--\n\n");
 	}
     }
+
+
+
+
+    //const unsigned flags[] = {
+    //    EDGE_TRUE_VALUE,
+    //    EDGE_FALSE_VALUE,
+    //    EDGE_TRUE_VALUE,
+    //};
+
+    //auto_vec<basic_block, 32> queue;
+
+    //// Start at the 2nd block; the first block cannot be an outcome.
+    //for (int i = 1; i < nblocks; i++)
+    //{
+    //    for (int k = 0; k < 2; k++)
+    //    for (edge e1 : blocks[i]->preds)
+    //    for (edge e2 : blocks[i]->preds)
+    //    {
+    //        // Order the sources so that e1 is a term left of e2. This also
+    //        // guards against incoming loop edges
+    //        if (e1->src->index >= e2->src->index)
+    //    	continue;
+
+    //        if (!(e1->flags & e2->flags & flags[k]))
+    //    	continue;
+
+    //        const int i1 = index_of (e1->src, blocks, nblocks);
+    //        const int i2 = index_of (e2->src, blocks, nblocks);
+    //        if (i1 == -1 || i2 == -1)
+    //    	continue;
+
+    //        basic_block top = e1->src;
+    //        basic_block bot = e2->src;
+    //        edge lim = edge_with (top->succs, flags[k+1]);
+
+    //        queue.truncate (0);
+    //        queue.quick_push (contract_edge (lim)->dest);
+
+    //        const int m = i2*2 + k;
+    //        while (!queue.is_empty ())
+    //        {
+    //    	basic_block q = queue.pop ();
+    //    	for (edge e : q->preds)
+    //    	{
+    //    	    basic_block b = contract_edge_up (e)->src;
+    //    	    // TODO: eliminate this
+    //    	    if (b->index >= bot->index)
+    //    		continue;
+
+    //    	    const int index = index_of (b, blocks, nblocks);
+    //    	    if (index == -1)
+    //    		continue;
+
+    //    	    gcov_type_unsigned bit = gcov_type_unsigned (1) << index;
+    //    	    if (masks[m] & bit)
+    //    		continue;
+
+    //    	    masks[m] |= bit;
+    //    	    if (b != top)
+    //    		queue.safe_push (b);
+    //    	}
+    //        }
+    //    }
+    //}
 }
 
 /* TODO: doc */
@@ -584,10 +690,10 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
 
     const int nblocks = scan_down (pre, post, blocks, ctx.maxsize, expr);
 
-    printf ("G: ");
-    for (int i = 0; i < nblocks; i++)
-	printf ("%d ", blocks[i]->index);
-    printf ("\n");
+    //printf ("G: ");
+    //for (int i = 0; i < nblocks; i++)
+    //    printf ("%d ", blocks[i]->index);
+    //printf ("\n");
 
     if (nblocks == 1)
 	return nblocks;
@@ -597,10 +703,10 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     basic_block *neighborhood = blocks + nblocks;
     basic_block *stack = neighborhood + nsize;
 
-    printf ("N(G): ");
-    for (int i = 0; i < nsize; i++)
-	printf ("%d ", neighborhood[i]->index);
-    printf ("\n");
+    //printf ("N(G): ");
+    //for (int i = 0; i < nsize; i++)
+    //    printf ("%d ", neighborhood[i]->index);
+    //printf ("\n");
 
     for (int i = 0; i < nsize; i++)
     {
@@ -659,21 +765,11 @@ sort_visit (basic_block b, vec<basic_block>& L, sbitmap marks)
    guarantee this property and the syntactical order of terms is very important
    to the condition coverage.  The sorting is from Cormen et al. (2001) but
    with back-edges ignored and thus without the need for temporary marks (for cycle
-   detection). */
-void sort_visit (basic_block b, vec<basic_block>& L, sbitmap marks)
-{
-    if (bitmap_bit_p (marks, b->index))
-	return;
+   detection).
 
-    for (edge e : b->succs)
-	if (!(e->flags & EDGE_DFS_BACK))
-	    sort_visit (e->dest, L, marks);
-
-    bitmap_set_bit (marks, b->index);
-    L.quick_push (b);
-}
-
-void sort (basic_block *blocks, int nblocks)
+   For the expression (a || (b && c) || d) the blocks should be [a b c d]. */
+void
+sort (basic_block *blocks, int nblocks)
 {
     auto_vec<basic_block, 32> L;
     auto_sbitmap marks (n_basic_blocks_for_fn (cfun));
@@ -715,24 +811,25 @@ collect_conditions (conds_ctx& ctx, basic_block block, const vec<basic_block>& v
 
     basic_block post = get_immediate_dominator (CDI_POST_DOMINATORS, block);
     const int nblocks = find_first_conditional (ctx, block, post);
-    (void)sort_terms;
 
+    // TODO: make this pretty
+    // can't use top-sort without exists-in-g qualifier
     auto cmp = [&v](basic_block l, basic_block r) {
 	return std::find (v.begin(), v.end(), l) < std::find (v.begin(), v.end(), r);
     };
-
     std::sort (ctx.blocks, ctx.blocks + nblocks, cmp);
+
     basic_block last = ctx.blocks[nblocks - 1];
     basic_block t = edge_with (last->succs, EDGE_TRUE_VALUE)->dest;
     basic_block f = edge_with (last->succs, EDGE_FALSE_VALUE)->dest;
 
-    printf ("B: ");
-    for (int i = 0; i < nblocks; i++)
-	printf ("%d ", ctx.blocks[i]->index);
-    printf ("// t = %d, f = %d\n", t->index, f->index);
+    //printf ("B: ");
+    //for (int i = 0; i < nblocks; i++)
+    //    printf ("%d ", ctx.blocks[i]->index);
+    //printf ("// t = %d, f = %d\n", t->index, f->index);
+    //printf("\n");
 
     ctx.mark (ctx.blocks, nblocks);
-    printf("\n");
 
     ctx.blocks[nblocks+0] = t;
     ctx.blocks[nblocks+1] = f;
@@ -853,36 +950,36 @@ find_conditions (
     bitmap_set_bit (ctx.marks, ENTRY_BLOCK);
     bitmap_set_bit (ctx.marks, EXIT_BLOCK);
 
-    printf ("digraph { // %s\n", current_function_name ());
-    for (basic_block b : v)
-    {
-	for (edge e : b->succs)
-	{
-	    printf ("    A%d -> A%d; // %u ", e->src->index, e->dest->index, e->flags);
-	    if (e->flags & EDGE_FALLTHRU)
-		printf ("fall-through ");
-	    if (e->flags & EDGE_ABNORMAL)
-		printf ("abnormal ");
-	    if (e->flags & EDGE_EH)
-		printf ("eh ");
-	    if (e->flags & EDGE_PRESERVE)
-		printf ("preserve ");
-	    if (e->flags & EDGE_FAKE)
-		printf ("fake ");
-	    if (e->flags & EDGE_DFS_BACK)
-		printf ("dfs-back ");
-	    if (e->flags & EDGE_IRREDUCIBLE_LOOP)
-		printf ("irreducible-loop ");
-	    if (e->flags & EDGE_TRUE_VALUE)
-		printf ("true-value ");
-	    if (e->flags & EDGE_FALSE_VALUE)
-		printf ("false-value ");
-	    if (e->flags & EDGE_EXECUTABLE)
-		printf ("executable ");
-	    printf ("\n");
-	}
-    }
-    printf ("}\n");
+    //printf ("digraph { // %s\n", current_function_name ());
+    //for (basic_block b : v)
+    //{
+    //    for (edge e : b->succs)
+    //    {
+    //        printf ("    A%d -> A%d; // %u ", e->src->index, e->dest->index, e->flags);
+    //        if (e->flags & EDGE_FALLTHRU)
+    //    	printf ("fall-through ");
+    //        if (e->flags & EDGE_ABNORMAL)
+    //    	printf ("abnormal ");
+    //        if (e->flags & EDGE_EH)
+    //    	printf ("eh ");
+    //        if (e->flags & EDGE_PRESERVE)
+    //    	printf ("preserve ");
+    //        if (e->flags & EDGE_FAKE)
+    //    	printf ("fake ");
+    //        if (e->flags & EDGE_DFS_BACK)
+    //    	printf ("dfs-back ");
+    //        if (e->flags & EDGE_IRREDUCIBLE_LOOP)
+    //    	printf ("irreducible-loop ");
+    //        if (e->flags & EDGE_TRUE_VALUE)
+    //    	printf ("true-value ");
+    //        if (e->flags & EDGE_FALSE_VALUE)
+    //    	printf ("false-value ");
+    //        if (e->flags & EDGE_EXECUTABLE)
+    //    	printf ("executable ");
+    //        printf ("\n");
+    //    }
+    //}
+    //printf ("}\n");
 
     sort (v.address (), v.length ());
     for (auto b : v)
