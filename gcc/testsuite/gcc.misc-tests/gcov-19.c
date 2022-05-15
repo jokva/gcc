@@ -819,6 +819,133 @@ mcdc022d (int a)
 	x = a + 1;
 }
 
+/* 023 specifically tests that masking works correctly, which gets complicated
+   fast with a mix of operators and deep subexpressions.  These tests violates
+   the style guide slightly to emphasize the nesting.  They all share the same
+   implementation and only one input is given to each function to obtain clean
+   coverage results. */
+void
+mcdc023a (int a, int b, int c, int d, int e, int f, int g, int h, int i, int k,
+	  int l, int m, int n)
+{
+    // [a m n] = 0, [b, ...] = 1
+    // a is masked by b and the remaining terms should be short circuited
+    if (/* conditions(1/24) true(0 2 3 4 5 6 7 8 9 10 11) false(0 1 2 3 4 5 6 7 8 9 10 11) */
+	/* conditions(end) */
+	   (a || b)
+	|| (   ((c && d) || (e && (f || g) && h))
+	    && (k || l)
+	    && (m || n)))
+	x = a + b;
+    else
+	x = b + c;
+}
+
+void
+mcdc023b (int a, int b, int c, int d, int e, int f, int g, int h, int i, int k,
+	  int l, int m, int n)
+{
+    // [a b d h] = 0, [c, ...] = 1
+    // h = 0 => false but does not mask (a || b) or (c && d). d = 0 masks c.
+    if (/* conditions(4/24) true(0 1 2 3 4 5 6 7 8 9 10 11) false(2 4 5 6 8 9 10 11) */
+	/* conditions(end) */
+	   (a || b)
+	|| (   ((c && d) || (e && (f || g) && h))
+	    && (k || l)
+	    && (m || n)))
+	x = a + b;
+    else
+	x = b + c;
+}
+
+void
+mcdc023c (int a, int b, int c, int d, int e, int f, int g, int h, int i, int k,
+	  int l, int m, int n)
+{
+    /* [m n a b] = 0, [...] = 1
+       n,m = 0 should mask all other terms than a, b */
+    if (/* conditions(4/24) true(0 1 2 3 4 5 6 7 8 9 10 11) false(2 3 4 5 6 7 8 9) */
+	/* conditions(end) */
+	   (a || b)
+	|| (   ((c && d) || (e && (f || g) && h))
+	    && (k || l)
+	    && (m || n)))
+	x = a + b;
+    else
+	x = b + c;
+}
+
+void
+mcdc023d (int a, int b, int c, int d, int e, int f, int g, int h, int i, int k,
+	  int l, int m, int n)
+{
+    /* [a b] = 0, [h, ...] = 1
+       n,m = 0 should mask all other terms than a, b */
+    if (/* conditions(4/24) true(0 1 2 3 4 5 6 7 8 9 10 11) false(2 3 4 5 6 7 10 11) */
+	/* conditions(end) */
+	   (a || b)
+	|| (   ((c && d) || (e && (f || g) && h))
+	    && (k || l)
+	    && (m || n)))
+	x = a + b;
+    else
+	x = b + c;
+}
+
+void
+mcdc023e (int a, int b, int c, int d, int e, int f, int g, int h, int i, int k,
+	  int l, int m, int n)
+{
+    /* [a b d] = 0, [c h, ...] = 1
+       h = 1 should mask c, d, leave other terms intact.
+       If [k l m n] were false then h itself would be masked.
+       [a b] are masked as collateral by [m n]. */
+    if (/* conditions(5/24) true(0 1 2 3 6 9 11) false(0 1 2 3 4 5 6 7 8 9 10 11) */
+	/* conditions(end) */
+	   (a || b)
+	|| (   ((c && d) || (e && (f || g) && h))
+	    && (k || l)
+	    && (m || n)))
+	x = a + b;
+    else
+	x = b + c;
+}
+
+void
+mcdc023f (int a, int b, int c, int d, int e, int f, int g, int h, int i, int k,
+	  int l, int m, int n)
+{
+    /* [a b c f g] = 0, [e, ...] = 1
+       [f g] = 0 should mask e, leave [c d] intact. */
+    if (/* conditions(5/24) true(0 1 2 3 4 5 6 7 8 9 10 11) false(3 4 7 8 9 10 11) */
+	/* conditions(end) */
+	   (a || b)
+	|| (   ((c && d) || (e && (f || g) && h))
+	    && (k || l)
+	    && (m || n)))
+	x = a + b;
+    else
+	x = b + c;
+}
+
+void
+mcdc023g (int a, int b, int c, int d, int e, int f, int g, int h, int i, int k,
+	  int l, int m, int n)
+{
+    /* [a b d f g] = 0, [e c, ...] = 1
+       Same as 023f but with [c d] flipped so d masks c rather than c
+       short-circuits.  This should not be lost. */
+    if (/* conditions(5/24) true(0 1 2 3 4 5 6 7 8 9 10 11) false(2 4 7 8 9 10 11) */
+	/* conditions(end) */
+	   (a || b)
+	|| (   ((c && d) || (e && (f || g) && h))
+	    && (k || l)
+	    && (m || n)))
+	x = a + b;
+    else
+	x = b + c;
+}
+
 int main ()
 {
     mcdc001a (0, 1);
@@ -992,6 +1119,14 @@ int main ()
     mcdc022c (1);
 
     mcdc022d (1);
+
+    mcdc023a (0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+    mcdc023b (0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1);
+    mcdc023c (0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0);
+    mcdc023d (0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1);
+    mcdc023e (0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+    mcdc023f (0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1);
+    mcdc023g (0, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1);
 }
 
 /* { dg-final { run-gcov conditions { --conditions gcov-19.c } } } */
