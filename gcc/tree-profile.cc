@@ -113,7 +113,9 @@ struct conds_ctx
 	bitmap_clear (marks);
     }
 
-    /* Commit the buffered n-term expression including outcome nodes. */
+    /* Commit the buffered n-term expression including outcome nodes.  nblocks
+       should be the number of nodes (terms) in the expression, without the
+       true/false outcome nodes. */
     void commit (int nblocks) noexcept (true)
     {
 	blocks  += nblocks + 2;
@@ -135,10 +137,10 @@ struct conds_ctx
 
     void mark (basic_block *blocks, int nblocks) noexcept (true)
     {
-	printf ("marking from %d: ", blocks[0]->index);
-	for (int i = 1; i < nblocks; i++)
-	    printf ("%d ", blocks[i]->index);
-	printf ("\n");
+	//printf ("marking from %d: ", blocks[0]->index);
+	//for (int i = 1; i < nblocks; i++)
+	//    printf ("%d ", blocks[i]->index);
+	//printf ("\n");
 
 	for (int i = 0; i < nblocks; i++)
 	    mark (blocks[i]);
@@ -374,6 +376,8 @@ scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
     }
 }
 
+/* A simple struct for storing/returning outcome block pairs.  Either both
+   blocks are set or both are NULL. */
 struct outcomes {
     basic_block t = NULL;
     basic_block f = NULL;
@@ -400,6 +404,16 @@ conditional_succs (const basic_block b)
 
     gcc_assert ((c.t && c.f) || (!c.t && !c.f));
     return c;
+}
+
+/* Get the index or offset of a conditional flag, 0 for true and 1 for false.
+   These indices carry no semantics but must be consistent as they are used to
+   index into data structures in code generation and gcov. */
+unsigned
+condition_index (unsigned flag)
+{
+    flag &= EDGE_CONDITION;
+    return flag == EDGE_TRUE_VALUE ? 0 : 1;
 }
 
 /* Compute the masking vector.
@@ -472,7 +486,7 @@ masking_vector (
 		continue;
 
 	    const unsigned flag = e1->flags & e2->flags & (EDGE_CONDITION);
-	    const unsigned k = flag == EDGE_FALSE_VALUE ? 1 : 0;
+	    const unsigned k = condition_index(flag);
 	    if (!flag)
 		continue;
 
@@ -483,8 +497,9 @@ masking_vector (
 	    if (i1 > i2)
 		continue;
 
-	    bitmap_clear (marks);
 	    outcomes out = conditional_succs (e1->src);
+	    gcc_assert (out);
+	    bitmap_clear (marks);
 	    bitmap_set_bit (marks, out.t->index);
 	    bitmap_set_bit (marks, out.f->index);
 	    queue.truncate (0);
@@ -497,6 +512,7 @@ masking_vector (
 		if (bitmap_bit_p (marks, q->index))
 		    continue;
 		outcomes succs = conditional_succs (q);
+		gcc_assert (succs);
 		if (!succs)
 		    continue;
 
@@ -530,7 +546,6 @@ masking_vector (
 }
 
 /* TODO: doc */
-/* TODO: check flags->DFS_BACK for loop edges */
 int
 scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 	   sbitmap expr)
@@ -552,6 +567,10 @@ scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 	    if (bitmap_bit_p (expr, dest->index))
 		continue;
 	    if (e->flags & EDGE_DFS_BACK)
+		continue;
+
+	    // OPPA
+	    if (!dominated_by_p (CDI_DOMINATORS, dest, pre))
 		continue;
 
 	    bitmap_set_bit (expr, dest->index);
@@ -736,7 +755,7 @@ collect_conditions (conds_ctx& ctx, basic_block block, const vec<basic_block>& v
     //printf ("B: ");
     //for (int i = 0; i < nblocks; i++)
     //    printf ("%d ", ctx.blocks[i]->index);
-    //printf ("// t = %d, f = %d\n", t->index, f->index);
+    //printf ("// t = %d, f = %d\n", out.t->index, out.f->index);
     //printf("\n");
 
     ctx.mark (ctx.blocks, nblocks);
@@ -881,9 +900,9 @@ find_conditions (
     //        if (e->flags & EDGE_IRREDUCIBLE_LOOP)
     //    	printf ("irreducible-loop ");
     //        if (e->flags & EDGE_TRUE_VALUE)
-    //    	printf ("true-value ");
+    //    	printf ("true ");
     //        if (e->flags & EDGE_FALSE_VALUE)
-    //    	printf ("false-value ");
+    //    	printf ("false ");
     //        if (e->flags & EDGE_EXECUTABLE)
     //    	printf ("executable ");
     //        printf ("\n");
@@ -941,15 +960,15 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
 		continue;
 
 	    /* accu |= expr[i] */
-	    const int t = !!(e->flags & EDGE_FALSE_VALUE);
+	    const int k = condition_index(e->flags);
 	    tree rhs = build_int_cst (gcov_type_node, 1ULL << i);
-	    emit_bitwise_op (e, accu[t], accu[t], BIT_IOR_EXPR, rhs);
+	    emit_bitwise_op (e, accu[k], accu[k], BIT_IOR_EXPR, rhs);
 
-	    if (masks[2*i + t] == 0)
+	    if (masks[2*i + k] == 0)
 		continue;
 
 	    /* accu &= mask[i] */
-	    tree mask = build_int_cst (gcov_type_node, ~masks[2*i + t]);
+	    tree mask = build_int_cst (gcov_type_node, ~masks[2*i + k]);
 	    for (int j = 0; j < 2; j++)
 		emit_bitwise_op (e, accu[j], accu[j], BIT_AND_EXPR, mask);
 	}
