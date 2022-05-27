@@ -492,7 +492,7 @@ masking_vector (
 		continue;
 
 	    const unsigned flag = e1->flags & e2->flags & (EDGE_CONDITION);
-	    const unsigned k = condition_index(flag);
+	    const unsigned k = condition_index (flag);
 	    if (!flag)
 		continue;
 
@@ -701,6 +701,9 @@ make_index_map_visit (const basic_block b, vec<basic_block>& L, sbitmap marks)
    important to the condition coverage.  The sorting algorithm is from Cormen
    et al (2001) but with back-edges ignored and thus there is no need for
    temporary marks (for cycle detection).
+
+   This function builds the map for the full function in order to make ordering
+   right, even if the interesting entry/exit range should be smaller.
 
    For the expression (a || (b && c) || d) the blocks should be [a b c d]. */
 void
@@ -970,7 +973,7 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
 		continue;
 
 	    /* accu |= expr[i] */
-	    const int k = condition_index(e->flags);
+	    const int k = condition_index (e->flags);
 	    tree rhs = build_int_cst (gcov_type_node, 1ULL << i);
 	    emit_bitwise_op (e, accu[k], accu[k], BIT_IOR_EXPR, rhs);
 
