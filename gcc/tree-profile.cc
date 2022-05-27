@@ -107,8 +107,14 @@ struct conds_ctx
     auto_sbitmap G1;
     auto_sbitmap G2;
 
+    /* A map from basic_block->index to its index in the topologically sorted
+       sequence.  This supports fast checks of "is-before", that is if
+       index_map[n] < index_map[m] then basic_block n is before m if they both
+       make up the same boolean expression. */
+    auto_vec<int, 16> index_map;
+
     explicit conds_ctx (unsigned size) noexcept (true) : maxsize (0), exprs (0),
-    marks(size), expr (size), G1 (size), G2 (size)
+    marks (size), expr (size), G1 (size), G2 (size)
     {
 	bitmap_clear (marks);
     }
@@ -337,9 +343,9 @@ contract_edge_up (edge e)
     }
 }
 
-/* Scan upwards and find the ancestors of a node, stopping at post.
-   dfs_enumerate_from () won't work as the filter function needs edge
-   information. */
+/* Scan upwards and find the ancestors of the node pre that are also in G,
+   stopping at post.  dfs_enumerate_from () won't work as the filter function
+   needs edge information. */
 void
 scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
 	 basic_block *stack)
@@ -583,7 +589,7 @@ scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 }
 
 /* Find the neighborhood of the graph G = [blocks, blocks+n), the
-   destination-nodes from G that are not also in G. */
+   successors of nodes in G that are not also in G. */
 int
 neighborhood (basic_block *blocks, int nblocks, const sbitmap G)
 {
@@ -675,44 +681,48 @@ emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2)
 }
 
 //TODO(monday) eliminate ->index comparisons
-/* See sort. */
 void
-sort_visit (basic_block b, vec<basic_block>& L, sbitmap marks)
+find_index_map_visit (const basic_block b, vec<basic_block>& L, sbitmap marks)
 {
     if (bitmap_bit_p (marks, b->index))
 	return;
 
     for (edge e : b->succs)
 	if (!(e->flags & EDGE_DFS_BACK))
-	    sort_visit (e->dest, L, marks);
+	    find_index_map_visit (e->dest, L, marks);
 
     bitmap_set_bit (marks, b->index);
     L.quick_push (b);
 }
 
-/* Topological sort the list of blocks so that left operands are before right
-   operands including subexpressions.  Sorting on block index does not
-   guarantee this property and the syntactical order of terms is very important
-   to the condition coverage.  The sorting is from Cormen et al. (2001) but
-   with back-edges ignored and thus without the need for temporary marks (for cycle
-   detection).
+/* Find a topological sorting of the blocks in a function so that left operands
+   are before right operands including subexpressions.  Sorting on block index
+   does not guarantee this property and the syntactical order of terms is very
+   important to the condition coverage.  The sorting algorithm is from Cormen
+   et al (2001) but with back-edges ignored and thus there is no need for
+   temporary marks (for cycle detection).
 
    For the expression (a || (b && c) || d) the blocks should be [a b c d]. */
 void
-sort (basic_block *blocks, int nblocks)
+find_index_map (const struct function *fn, vec<int>& index_map)
 {
+    const int max_index = n_basic_blocks_for_fn (fn);
+
     auto_vec<basic_block, 32> L;
-    auto_sbitmap marks (n_basic_blocks_for_fn (cfun));
-    L.reserve (n_basic_blocks_for_fn (cfun));
+    L.reserve (max_index);
+    auto_sbitmap marks (max_index);
     bitmap_clear (marks);
 
-    for (int i = 0; i < nblocks; i++)
-	sort_visit (blocks[i], L, marks);
+    basic_block bb;
+    FOR_EACH_BB_FN (bb, fn)
+	find_index_map_visit (bb, L, marks);
 
+    const int nblocks = L.length ();
+    gcc_assert (nblocks == max_index);
     L.reverse ();
-    gcc_assert (int (L.length ()) == nblocks);
+    index_map.safe_grow_cleared (max_index);
     for (int i = 0; i < nblocks; i++)
-	blocks[i] = L[i];
+	index_map[L[i]->index] = i;
 }
 
 /* Walk the CFG and collect conditionals.
@@ -728,7 +738,7 @@ sort (basic_block *blocks, int nblocks)
    Walking is not guaranteed to find nodes in the order of the expression, it
    might find (a || b) && c as [a c b]. */
 void
-collect_conditions (conds_ctx& ctx, basic_block block, const vec<basic_block>& v)
+collect_conditions (conds_ctx& ctx, basic_block block)
 {
     if (bitmap_bit_p (ctx.marks, block->index))
 	return;
@@ -742,10 +752,8 @@ collect_conditions (conds_ctx& ctx, basic_block block, const vec<basic_block>& v
     basic_block post = get_immediate_dominator (CDI_POST_DOMINATORS, block);
     const int nblocks = find_first_conditional (ctx, block, post);
 
-    // TODO: make this pretty
-    // can't use top-sort without exists-in-g qualifier
-    auto cmp = [&v](basic_block l, basic_block r) {
-	return std::find (v.begin(), v.end(), l) < std::find (v.begin(), v.end(), r);
+    auto cmp = [&ctx](basic_block l, basic_block r) {
+	return ctx.index_map[l->index] < ctx.index_map[r->index];
     };
     std::sort (ctx.blocks, ctx.blocks + nblocks, cmp);
 
@@ -845,6 +853,8 @@ find_conditions (
     int *sizes,
     int maxsize)
 {
+    // TODO: assert entry/exit belongs to same cfun
+
     record_loop_exits ();
     mark_dfs_back_edges (cfun);
     bool free_dom = false;
@@ -867,17 +877,9 @@ find_conditions (
     ctx.maxsize = maxsize;
     sizes[0] = sizes[1] = 0;
 
-    auto_vec<basic_block, 32> v;
-    // TODO: problem with this iteration: complicated control flow means this starts in-middle-of expr?
-    // TODO: quick push?
-    auto cmp = [](const_basic_block, const void *) {
-        return true;
-    };
-    v.safe_grow_cleared (n_basic_blocks_for_fn (cfun));
-    int n = dfs_enumerate_from (entry, 0, cmp, v.address (), v.length (), exit);
-    v.truncate (n);
     bitmap_set_bit (ctx.marks, ENTRY_BLOCK);
     bitmap_set_bit (ctx.marks, EXIT_BLOCK);
+    find_index_map (cfun, ctx.index_map);
 
     //printf ("digraph { // %s\n", current_function_name ());
     //for (basic_block b : v)
@@ -910,9 +912,9 @@ find_conditions (
     //}
     //printf ("}\n");
 
-    sort (v.address (), v.length ());
-    for (auto b : v)
-	collect_conditions (ctx, b, v);
+    basic_block bb;
+    FOR_BB_BETWEEN (bb, entry, exit, next_bb)
+	collect_conditions (ctx, bb);
     gcc_assert (ctx.all_marked ());
 
     /* Partial sum.  */

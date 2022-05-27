@@ -1536,7 +1536,7 @@ branch_prob (bool thunk)
 
   if (profile_condition_flag)
     {
-      basic_block entry = ENTRY_BLOCK_PTR_FOR_FN (cfun)->next_bb;
+      basic_block entry = ENTRY_BLOCK_PTR_FOR_FN (cfun);
       basic_block exit  = EXIT_BLOCK_PTR_FOR_FN (cfun);
 
       // find_conditions () expect memory up front, see that function for
