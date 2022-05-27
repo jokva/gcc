@@ -682,14 +682,14 @@ emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2)
 
 //TODO(monday) eliminate ->index comparisons
 void
-find_index_map_visit (const basic_block b, vec<basic_block>& L, sbitmap marks)
+make_index_map_visit (const basic_block b, vec<basic_block>& L, sbitmap marks)
 {
     if (bitmap_bit_p (marks, b->index))
 	return;
 
     for (edge e : b->succs)
 	if (!(e->flags & EDGE_DFS_BACK))
-	    find_index_map_visit (e->dest, L, marks);
+	    make_index_map_visit (e->dest, L, marks);
 
     bitmap_set_bit (marks, b->index);
     L.quick_push (b);
@@ -704,7 +704,7 @@ find_index_map_visit (const basic_block b, vec<basic_block>& L, sbitmap marks)
 
    For the expression (a || (b && c) || d) the blocks should be [a b c d]. */
 void
-find_index_map (const struct function *fn, vec<int>& index_map)
+make_index_map (const struct function *fn, vec<int>& index_map)
 {
     const int max_index = n_basic_blocks_for_fn (fn);
 
@@ -713,9 +713,17 @@ find_index_map (const struct function *fn, vec<int>& index_map)
     auto_sbitmap marks (max_index);
     bitmap_clear (marks);
 
+    basic_block entry = ENTRY_BLOCK_PTR_FOR_FN (fn);
+    basic_block exit = EXIT_BLOCK_PTR_FOR_FN (fn);
+    /* Explicitly visit the exit/bottom.  In some infinite loops there is no
+       edge going to the exit node, but we want to make sure it is still
+       populated in the index map.  The exit should be larger than every other
+       node, so evaluate it first. */
+    make_index_map_visit (exit, L, marks);
+
     basic_block bb;
-    FOR_EACH_BB_FN (bb, fn)
-	find_index_map_visit (bb, L, marks);
+    FOR_BB_BETWEEN (bb, entry, exit, next_bb)
+	make_index_map_visit (bb, L, marks);
 
     const int nblocks = L.length ();
     gcc_assert (nblocks == max_index);
@@ -879,7 +887,7 @@ find_conditions (
 
     bitmap_set_bit (ctx.marks, ENTRY_BLOCK);
     bitmap_set_bit (ctx.marks, EXIT_BLOCK);
-    find_index_map (cfun, ctx.index_map);
+    make_index_map (cfun, ctx.index_map);
 
     //printf ("digraph { // %s\n", current_function_name ());
     //for (basic_block b : v)
