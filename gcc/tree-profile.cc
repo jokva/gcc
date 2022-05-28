@@ -339,22 +339,21 @@ scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
 	return;
     for (int n = 0; n >= 0; n--)
     {
-	// TODO: clean up
 	auto preds = stack[n]->preds;
-	while (single (preds) && !edge_conditional_p (single_edge (preds)))
-	    preds = single_edge (preds)->src->preds;
+	if (single (preds))
+	{
+	    edge e = single_edge (preds);
+	    e = contract_edge_up (e);
+	    preds = e->dest->preds;
+	}
 
 	for (edge e : preds)
 	{
 	    basic_block src = e->src;
-
-	    /* TODO: edge-up must probably get source-treatment */
 	    if (bitmap_bit_p (ancestors, e->src->index))
 		continue;
-
 	    if (!bitmap_bit_p (G, e->src->index))
 		continue;
-
 	    bitmap_set_bit (ancestors, src->index);
 	    stack[n++] = src;
 	}
@@ -878,7 +877,8 @@ find_conditions (
     make_index_map (dfs, n_basic_blocks_for_fn (fn), ctx.index_map);
 
     //printf ("digraph { // %s\n", current_function_name ());
-    //for (basic_block b : v)
+    //basic_block b;
+    //FOR_EACH_BB_FN(b, fn)
     //{
     //    for (edge e : b->succs)
     //    {

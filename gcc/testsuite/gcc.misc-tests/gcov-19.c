@@ -722,6 +722,7 @@ dest:
 
 int __sigsetjmp ();
 
+/* This should compile, but not called. */
 void
 mcdc021c ()
 {
@@ -730,6 +731,20 @@ mcdc021c ()
      __sigsetjmp ();
 }
 
+/* If edges are not properly contracted the a && id (b) will be interpreted as
+   two independent expressions. */
+void
+mcdc021d (int a, int b, int c, int d)
+{
+    if (a && id (b)) /* conditions(1/4) true(0 1) false(0) */
+		     /* conditions(end) */
+	x = 1;
+    else if (c && id (d)) /* conditions(1/4) true(0 1) false(0) */
+			  /* conditions(end) */
+	x = 2;
+    else
+	x = 3;
+}
 
 /* Adapted from linux arch/x86/tools/relocs.c
    With poor edge contracting this became an infinite loop. */
@@ -1096,6 +1111,8 @@ int main ()
 
     mcdc020c (0, 1);
     mcdc020c (1, 1);
+
+    mcdc021d (1, 0, 1, 0);
 
     mcdc022a (0, 0);
 
