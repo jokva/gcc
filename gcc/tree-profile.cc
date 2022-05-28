@@ -287,18 +287,7 @@ edge_conditional_p (const edge e)
 edge
 contract_edge (edge e)
 {
-    if (is_conditional_p (e->dest))
-	return e;
-
-    gimple *stmt = gsi_stmt (gsi_last_bb (e->dest));
-    // TODO: the dest block is empty and either just gotos or falls through;
-    // should it not be contracted?
-    if (!stmt)
-	return e;
-
     edge source = e;
-    expanded_location xloc = expand_location (gimple_location (stmt));
-
     while (true)
     {
 	basic_block dest = e->dest;
@@ -306,20 +295,8 @@ contract_edge (edge e)
 	    return source;
 	if (e->flags & EDGE_DFS_BACK)
 	    return source;
-
 	if (is_conditional_p (dest))
-	{
-	    gimple *stmt = gsi_stmt (gsi_last_bb (dest));
-	    expanded_location yloc = expand_location (gimple_location (stmt));
-
-	    if (yloc.line > xloc.line)
-		return source;
-	    if (yloc.line < xloc.line)
-		return e;
-	    if (yloc.column > xloc.column)
-		return source;
 	    return e;
-	}
 
 	edge succe = single_edge (dest->succs);
 	if (!succe)
@@ -570,15 +547,13 @@ scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 	    basic_block dest = contract_edge (e)->dest;
 	    if (dest == post)
 		continue;
+	    if (!dominated_by_p (CDI_DOMINATORS, dest, pre))
+		continue;
 	    if (!is_conditional_p (dest))
 		continue;
 	    if (bitmap_bit_p (expr, dest->index))
 		continue;
 	    if (e->flags & EDGE_DFS_BACK)
-		continue;
-
-	    // OPPA
-	    if (!dominated_by_p (CDI_DOMINATORS, dest, pre))
 		continue;
 
 	    bitmap_set_bit (expr, dest->index);
@@ -682,7 +657,7 @@ emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2)
     gsi_insert_on_edge (e, write);
 }
 
-//TODO(monday) eliminate ->index comparisons
+/* Visitor for make_index_map. */
 void
 make_index_map_visit (basic_block b, vec<basic_block>& L, vec<int>& marks)
 {
