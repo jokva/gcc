@@ -751,7 +751,8 @@ make_index_map (const vec<basic_block>& blocks, int max_index,
       that starts in root.
 
    Walking is not guaranteed to find nodes in the order of the expression, it
-   might find (a || b) && c as [a c b]. */
+   might find (a || b) && c as [a c b], so the result must be sorted by the
+   index map. */
 void
 collect_conditions (conds_ctx& ctx, basic_block block)
 {
@@ -766,14 +767,12 @@ collect_conditions (conds_ctx& ctx, basic_block block)
 
     basic_block post = get_immediate_dominator (CDI_POST_DOMINATORS, block);
     const int nblocks = find_first_conditional (ctx, block, post);
+    ctx.mark (ctx.blocks, nblocks);
 
     auto cmp = [&ctx](basic_block l, basic_block r) {
 	return ctx.index_map[l->index] < ctx.index_map[r->index];
     };
     std::sort (ctx.blocks, ctx.blocks + nblocks, cmp);
-
-    basic_block last = ctx.blocks[nblocks - 1];
-    outcomes out = conditional_succs (last);
 
     //printf ("B: ");
     //for (int i = 0; i < nblocks; i++)
@@ -781,13 +780,12 @@ collect_conditions (conds_ctx& ctx, basic_block block)
     //printf ("// t = %d, f = %d\n", out.t->index, out.f->index);
     //printf("\n");
 
-    ctx.mark (ctx.blocks, nblocks);
-
-    ctx.blocks[nblocks+0] = out.t;
-    ctx.blocks[nblocks+1] = out.f;
-
     if (size_t (nblocks) <= CONDITIONS_MAX_TERMS)
     {
+	basic_block last = ctx.blocks[nblocks - 1];
+	outcomes out = conditional_succs (last);
+	ctx.blocks[nblocks+0] = out.t;
+	ctx.blocks[nblocks+1] = out.f;
 	ctx.commit (nblocks);
     }
     else
