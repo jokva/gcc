@@ -135,13 +135,13 @@ struct conds_ctx
 
     /* Mark a node as processed so nodes are not processed twice for example in
        loops, gotos. */
-    void mark (basic_block b) noexcept (true)
+    void mark (const basic_block b) noexcept (true)
     {
 	gcc_assert (!bitmap_bit_p (marks, b->index));
 	bitmap_set_bit (marks, b->index);
     }
 
-    void mark (basic_block *blocks, int nblocks) noexcept (true)
+    void mark (const basic_block *blocks, int nblocks) noexcept (true)
     {
 	//printf ("marking from %d: ", blocks[0]->index);
 	//for (int i = 1; i < nblocks; i++)
@@ -152,10 +152,12 @@ struct conds_ctx
 	    mark (blocks[i]);
     }
 
-    bool all_marked () const noexcept (true)
+    bool all_marked (const vec<basic_block>& reachable) const noexcept (true)
     {
-	const_sbitmap cm = static_cast<const_sbitmap> (marks);
-	return bitmap_count_bits (marks) == SBITMAP_SIZE (cm);
+	for (const basic_block b : reachable)
+	    if (!bitmap_bit_p (marks, b->index))
+		return false;
+	return true;
     }
 };
 
@@ -682,16 +684,16 @@ emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2)
 
 //TODO(monday) eliminate ->index comparisons
 void
-make_index_map_visit (const basic_block b, vec<basic_block>& L, sbitmap marks)
+make_index_map_visit (basic_block b, vec<basic_block>& L, vec<int>& marks)
 {
-    if (bitmap_bit_p (marks, b->index))
+    if (marks[b->index])
 	return;
 
     for (edge e : b->succs)
 	if (!(e->flags & EDGE_DFS_BACK))
 	    make_index_map_visit (e->dest, L, marks);
 
-    bitmap_set_bit (marks, b->index);
+    marks[b->index] = 1;
     L.quick_push (b);
 }
 
@@ -702,38 +704,40 @@ make_index_map_visit (const basic_block b, vec<basic_block>& L, sbitmap marks)
    et al (2001) but with back-edges ignored and thus there is no need for
    temporary marks (for cycle detection).
 
-   This function builds the map for the full function in order to make ordering
-   right, even if the interesting entry/exit range should be smaller.
+   It is important to select unvisited nodes in DFS order to ensure the
+   roots/leading terms of boolean expressions are visited first (the other
+   terms being covered by the recursive step), but the visiting order of
+   individual boolean expressions carries no significance.
 
    For the expression (a || (b && c) || d) the blocks should be [a b c d]. */
 void
-make_index_map (const struct function *fn, vec<int>& index_map)
+make_index_map (const vec<basic_block>& blocks, int max_index,
+		vec<int>& index_map)
 {
-    const int max_index = n_basic_blocks_for_fn (fn);
-
     auto_vec<basic_block, 32> L;
     L.reserve (max_index);
-    auto_sbitmap marks (max_index);
-    bitmap_clear (marks);
 
-    basic_block entry = ENTRY_BLOCK_PTR_FOR_FN (fn);
-    basic_block exit = EXIT_BLOCK_PTR_FOR_FN (fn);
-    /* Explicitly visit the exit/bottom.  In some infinite loops there is no
-       edge going to the exit node, but we want to make sure it is still
-       populated in the index map.  The exit should be larger than every other
-       node, so evaluate it first. */
-    make_index_map_visit (exit, L, marks);
-
-    basic_block bb;
-    FOR_BB_BETWEEN (bb, entry, exit, next_bb)
-	make_index_map_visit (bb, L, marks);
-
-    const int nblocks = L.length ();
-    gcc_assert (nblocks == max_index);
-    L.reverse ();
+    /* Use of the output map as a temporary for tracking visited status. */
+    index_map.truncate (0);
     index_map.safe_grow_cleared (max_index);
+    for (const basic_block b : blocks)
+	make_index_map_visit (b, L, index_map);
+
+    /* Insert canaries - if there are unreachable nodes (for example infinite
+       loops) then the unreachable nodes should never be needed for comparison,
+       and L.length () < max_index.  An index mapping should also never be
+       recorded twice. */
+    for (unsigned i = 0; i < index_map.length (); i++)
+	index_map[i] = -1;
+
+    gcc_assert (blocks.length () == L.length ());
+    L.reverse ();
+    const int nblocks = L.length ();
     for (int i = 0; i < nblocks; i++)
+    {
+	gcc_assert (L[i]->index != -1);
 	index_map[L[i]->index] = i;
+    }
 }
 
 /* Walk the CFG and collect conditionals.
@@ -793,6 +797,11 @@ collect_conditions (conds_ctx& ctx, basic_block block)
 		    "Too many conditions (found %d); giving up coverage",
 		    nblocks);
     }
+}
+
+/* Used for dfs_enumerate_from () to include all reachable nodes. */
+bool yes (const_basic_block, const void *) {
+    return true;
 }
 
 }
@@ -858,16 +867,13 @@ collect_conditions (conds_ctx& ctx, basic_block block)
  */
 int
 find_conditions (
-    basic_block entry,
-    basic_block exit,
+    struct function *fn,
     basic_block *blocks,
     int *sizes,
     int maxsize)
 {
-    // TODO: assert entry/exit belongs to same cfun
-
     record_loop_exits ();
-    mark_dfs_back_edges (cfun);
+    mark_dfs_back_edges (fn);
     bool free_dom = false;
     bool free_post_dom = false;
     if (!dom_info_available_p (CDI_POST_DOMINATORS))
@@ -882,15 +888,21 @@ find_conditions (
 	free_dom = true;
     }
 
-    conds_ctx ctx (n_basic_blocks_for_fn (cfun));
+    conds_ctx ctx (n_basic_blocks_for_fn (fn));
     ctx.blocks = blocks;
     ctx.sizes = sizes + 1;
     ctx.maxsize = maxsize;
     sizes[0] = sizes[1] = 0;
 
-    bitmap_set_bit (ctx.marks, ENTRY_BLOCK);
-    bitmap_set_bit (ctx.marks, EXIT_BLOCK);
-    make_index_map (cfun, ctx.index_map);
+    auto_vec<basic_block, 16> dfs;
+    dfs.safe_grow (n_basic_blocks_for_fn (fn));
+    const basic_block entry = ENTRY_BLOCK_PTR_FOR_FN (fn);
+    const basic_block exit = ENTRY_BLOCK_PTR_FOR_FN (fn);
+    int n = dfs_enumerate_from (entry, 0, yes, dfs.address (), dfs.length (),
+				exit);
+    dfs.truncate (n);
+
+    make_index_map (dfs, n_basic_blocks_for_fn (fn), ctx.index_map);
 
     //printf ("digraph { // %s\n", current_function_name ());
     //for (basic_block b : v)
@@ -923,10 +935,13 @@ find_conditions (
     //}
     //printf ("}\n");
 
-    basic_block bb;
-    FOR_BB_BETWEEN (bb, entry, exit, next_bb)
-	collect_conditions (ctx, bb);
-    gcc_assert (ctx.all_marked ());
+    /* Visit all reachable nodes and collect conditions.  DFS order is
+       important so the first node of a boolean expression is visited first
+       (it will mark subsequent terms). */
+    for (basic_block b : dfs)
+	collect_conditions (ctx, b);
+
+    gcc_assert (ctx.all_marked (dfs));
 
     /* Partial sum.  */
     for (int i = 0; i < ctx.exprs; ++i)
