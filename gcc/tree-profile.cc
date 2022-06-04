@@ -742,6 +742,7 @@ collect_conditions (conds_ctx& ctx, basic_block block)
     const int nblocks = find_first_conditional (ctx, block, post);
     ctx.mark (ctx.blocks, nblocks);
 
+    // TODO: de-lambda
     auto cmp = [&ctx](basic_block l, basic_block r) {
 	return ctx.index_map[l->index] < ctx.index_map[r->index];
     };
@@ -930,6 +931,8 @@ find_conditions (
 int instrument_decisions (basic_block *blocks, int nblocks, int condno)
 {
     /* Insert function-local accumulators per decision.  */
+    // TODO: single accumulator reset between conditions
+    // TODO: only problem is sequencing of conditions
     tree accu[2] = {
 	build_decl (UNKNOWN_LOCATION, VAR_DECL,
 		    get_identifier ("__conditions_accu_t"), gcov_type_node),
