@@ -195,7 +195,7 @@ index_of (const_basic_block needle, const const_basic_block *blocks, int size)
 /* Returns true if this is a conditional node, i.e. it has outgoing true and
    false edges. */
 bool
-is_conditional_p (const basic_block b)
+block_conditional_p (const basic_block b)
 {
     unsigned t = 0;
     unsigned f = 0;
@@ -205,6 +205,13 @@ is_conditional_p (const basic_block b)
         f |= (e->flags & EDGE_FALSE_VALUE);
     }
     return t && f;
+}
+
+/* Check if the edge is a conditional. */
+bool
+edge_conditional_p (const edge e)
+{
+    return e->flags & EDGE_CONDITION;
 }
 
 /* Special cases of the single_*_p and single_*_edge functions in basic-block.h
@@ -241,13 +248,6 @@ single_edge (const vec<edge, va_gc> *edges)
 	return e;
     }
     return NULL;
-}
-
-/* Check if the edge is a conditional. */
-bool
-edge_conditional_p (const edge e)
-{
-    return e->flags & EDGE_CONDITION;
 }
 
 /* Sometimes, for example with function calls and C++ destructors, the CFG gets
@@ -295,7 +295,7 @@ contract_edge (edge e)
 	    return source;
 	if (e->flags & EDGE_DFS_BACK)
 	    return source;
-	if (is_conditional_p (dest))
+	if (block_conditional_p (dest))
 	    return e;
 
 	e = single_edge (dest->succs);
@@ -395,8 +395,7 @@ conditional_succs (const basic_block b)
 unsigned
 condition_index (unsigned flag)
 {
-    flag &= EDGE_CONDITION;
-    return flag == EDGE_TRUE_VALUE ? 0 : 1;
+    return (flag & EDGE_CONDITION) == EDGE_TRUE_VALUE ? 0 : 1;
 }
 
 /* Compute the masking vector.
@@ -547,7 +546,7 @@ scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 		continue;
 	    if (!dominated_by_p (CDI_DOMINATORS, dest, pre))
 		continue;
-	    if (!is_conditional_p (dest))
+	    if (!block_conditional_p (dest))
 		continue;
 	    if (bitmap_bit_p (expr, dest->index))
 		continue;
@@ -732,7 +731,7 @@ collect_conditions (conds_ctx& ctx, basic_block block)
     if (bitmap_bit_p (ctx.marks, block->index))
 	return;
 
-    if (!is_conditional_p (block))
+    if (!block_conditional_p (block))
     {
 	ctx.mark (block);
 	return;
