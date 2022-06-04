@@ -77,4 +77,17 @@ extern void get_working_sets (void);
    profile.cc.  */
 extern struct gcov_summary *profile_info;
 
+/* Condition coverage. Implemented in tree-profile.cc */
+struct condition_coverage
+{
+public:
+    condition_coverage () = default;
+
+    int find_conditions (struct function*);
+
+//private:
+    auto_vec<basic_block, 32> blocks;
+    auto_vec<int, 16> spans;
+};
+
 #endif /* PROFILE_H */

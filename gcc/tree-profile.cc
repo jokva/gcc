@@ -97,11 +97,6 @@ struct conds_ctx
     auto_sbitmap expr;
     auto_sbitmap G1;
     auto_sbitmap G2;
-
-    /* A map from basic_block->index to its index in the topologically sorted
-       sequence.  This supports fast checks of "is-before", that is if
-       index_map[n] < index_map[m] then basic_block n is before m if they both
-       make up the same boolean expression. */
     auto_vec<int, 16> index_map;
 
     explicit conds_ctx (unsigned size) noexcept (true) :
@@ -817,7 +812,7 @@ bool yes (const_basic_block, const void *) {
        little run-time cost and is guaranteed to be sufficient.
  */
 int
-find_conditions (struct function *fn, basic_block *blocks, int *sizes)
+condition_coverage::find_conditions (struct function *fn)
 {
     record_loop_exits ();
     mark_dfs_back_edges (fn);
@@ -830,6 +825,10 @@ find_conditions (struct function *fn, basic_block *blocks, int *sizes)
 	calculate_dominance_info (CDI_POST_DOMINATORS);
 
     const int nblocks = n_basic_blocks_for_fn (fn);
+    blocks.reserve (3 * nblocks);
+    blocks.truncate (0);
+    spans.truncate (0);
+
     conds_ctx ctx (nblocks);
 
     auto_vec<basic_block, 16> dfs;
@@ -880,18 +879,15 @@ find_conditions (struct function *fn, basic_block *blocks, int *sizes)
 
     gcc_assert (ctx.all_marked (dfs));
 
-    /* Partial sum.  */
-    sizes[0] = sizes[1] = 0;
-    for (unsigned i = 0; i < ctx.sizes.length (); ++i)
-	sizes[i + 1] = ctx.sizes[i] + sizes[i];
-
-    for (unsigned i = 0; i < ctx.blocks.length (); ++i)
-	blocks[i] = ctx.blocks[i];
-
     if (!dom_available)
 	free_dominance_info (CDI_DOMINATORS);
     if (!post_dom_available)
 	free_dominance_info (CDI_POST_DOMINATORS);
+
+    blocks.splice (ctx.blocks);
+    spans.safe_push (0);
+    for (int s : ctx.sizes)
+	spans.safe_push (spans.last () + s);
 
     return ctx.sizes.length ();
 }

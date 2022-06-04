@@ -69,7 +69,6 @@ along with GCC; see the file COPYING3.  If not see
 
 #include "profile.h"
 
-int find_conditions (struct function*, basic_block*, int*);
 int instrument_decisions (basic_block*, int, int);
 
 /* Map from BBs/edges to gcov counters.  */
@@ -1536,17 +1535,8 @@ branch_prob (bool thunk)
 
   if (profile_condition_flag)
     {
-      // find_conditions () expect memory up front, see that function for
-      // details
-      const int max_blocks = 5 * n_basic_blocks_for_fn (cfun);
-      auto_vec<basic_block> blocks (max_blocks);
-      blocks.quick_grow (max_blocks);
-
-      const int max_sizes = n_basic_blocks_for_fn (cfun) + 1;
-      auto_vec<int> sizes (max_sizes);
-      sizes.quick_grow (max_sizes);
-
-      int nconds = find_conditions (cfun, blocks.address (), sizes.address ());
+      condition_coverage cov;
+      const int nconds = cov.find_conditions (cfun);
       total_num_conds += nconds;
 
       if (coverage_counter_alloc (GCOV_COUNTER_CONDS, 2 * nconds))
@@ -1556,13 +1546,13 @@ branch_prob (bool thunk)
 	      offset = gcov_write_tag (GCOV_TAG_CONDS);
 	  for (int i = 0; i < nconds; ++i)
 	  {
-	      const int idx = sizes[i];
-	      const int len = sizes[i + 1] - idx;
-	      basic_block *itr = blocks.address () + idx;
+	      const int idx = cov.spans[i];
+	      const int len = cov.spans[i + 1] - idx;
+	      basic_block *itr = cov.blocks.address () + idx;
 	      const int terms = instrument_decisions (itr, len, i);
 	      if (output_to_file)
 	      {
-		  gcov_write_unsigned (blocks[idx]->index);
+		  gcov_write_unsigned (cov.blocks[idx]->index);
 		  gcov_write_unsigned (terms);
 	      }
 	  }
