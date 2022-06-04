@@ -321,8 +321,9 @@ contract_edge_up (edge e)
 }
 
 /* Scan upwards and find the ancestors of the node pre that are also in G,
-   stopping at post.  dfs_enumerate_from () won't work as the filter function
-   needs edge information. */
+   stopping at post. The ancestors are recorded in the bimap.
+   dfs_enumerate_from () won't work as the filter function needs edge
+   information. */
 void
 scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
 	 basic_block *stack)
@@ -337,15 +338,15 @@ scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
 	return;
     for (int n = 0; n >= 0; n--)
     {
-	auto preds = stack[n]->preds;
-	if (single (preds))
+	basic_block b = stack[n];
+	if (single (b->preds))
 	{
-	    edge e = single_edge (preds);
+	    edge e = single_edge (b->preds);
 	    e = contract_edge_up (e);
-	    preds = e->dest->preds;
+	    b = e->dest;
 	}
 
-	for (edge e : preds)
+	for (edge e : b->preds)
 	{
 	    basic_block src = e->src;
 	    if (bitmap_bit_p (ancestors, e->src->index))
