@@ -88,6 +88,7 @@ public:
 //private:
     auto_vec<basic_block, 32> blocks;
     auto_vec<int, 16> spans;
+    auto_vec<gcov_type_unsigned, 32> masking_vectors;
 };
 
 #endif /* PROFILE_H */

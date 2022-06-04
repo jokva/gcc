@@ -69,7 +69,7 @@ along with GCC; see the file COPYING3.  If not see
 
 #include "profile.h"
 
-int instrument_decisions (basic_block*, int, int);
+int instrument_decisions (basic_block*, int, int, gcov_type_unsigned*);
 
 /* Map from BBs/edges to gcov counters.  */
 vec<gcov_type> bb_gcov_counts;
@@ -1549,7 +1549,7 @@ branch_prob (bool thunk)
 	      const int idx = cov.spans[i];
 	      const int len = cov.spans[i + 1] - idx;
 	      basic_block *itr = cov.blocks.address () + idx;
-	      const int terms = instrument_decisions (itr, len, i);
+	      const int terms = instrument_decisions (itr, len, i, cov.masking_vectors.begin () + 2*idx);
 	      if (output_to_file)
 	      {
 		  gcov_write_unsigned (cov.blocks[idx]->index);

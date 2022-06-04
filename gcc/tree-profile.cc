@@ -889,10 +889,22 @@ condition_coverage::find_conditions (struct function *fn)
     for (int s : ctx.sizes)
 	spans.safe_push (spans.last () + s);
 
+    masking_vectors.reserve (2 * blocks.length ());
+    for (unsigned i = 0; i < ctx.sizes.length (); i++)
+    {
+	const int idx = spans[i];
+	const int len = spans[i + 1] - idx;
+	basic_block *itr = blocks.begin () + idx;
+
+	const unsigned oldlen = masking_vectors.length ();
+	masking_vectors.safe_grow_cleared (oldlen + 2*len);
+	masking_vector (itr, len, masking_vectors.begin () + oldlen);
+    }
+
     return ctx.sizes.length ();
 }
 
-int instrument_decisions (basic_block *blocks, int nblocks, int condno)
+int instrument_decisions (basic_block *blocks, int nblocks, int condno, gcov_type_unsigned *masks)
 {
     /* Insert function-local accumulators per decision.  */
     // TODO: single accumulator reset between conditions
@@ -909,10 +921,6 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno)
 	for (edge e : ENTRY_BLOCK_PTR_FOR_FN (cfun)->succs)
 	    gsi_insert_on_edge (e, gimple_build_assign (acc, zero));
     }
-
-    auto_vec<gcov_type_unsigned, 32> masks (nblocks * 2);
-    masks.quick_grow_cleared (nblocks * 2);
-    masking_vector (blocks, nblocks, masks.address ());
 
     /* The true/false target blocks are included in the nblocks set, but
        their outgoing edges should not be instrumented. */
