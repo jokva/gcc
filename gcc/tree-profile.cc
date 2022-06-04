@@ -530,16 +530,13 @@ masking_vector (
 }
 
 /* TODO: doc */
-int
-scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
-	   sbitmap expr)
+void
+scan_down (basic_block pre, basic_block post, sbitmap expr,
+	   vec<basic_block>& out)
 {
-    gcc_assert (maxsize > 0);
-    int n = 0;
-    out[n++] = pre;
+    out.safe_push (pre);
     bitmap_set_bit (expr, pre->index);
-
-    for (int pos = 0; pos < n; pos++)
+    for (unsigned pos = 0; pos < out.length (); pos++)
     {
 	for (edge e : out[pos]->succs)
 	{
@@ -556,23 +553,19 @@ scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 		continue;
 
 	    bitmap_set_bit (expr, dest->index);
-	    out[n++] = dest;
-	    if (n == maxsize)
-		return n;
+	    out.safe_push (dest);
 	}
     }
-    return n;
 }
 
 /* Find the neighborhood of the graph G = [blocks, blocks+n), the
    successors of nodes in G that are not also in G. */
 void
-neighborhood (basic_block *blocks, int nblocks, const sbitmap G,
-	      vec<basic_block>& out)
+neighborhood (vec<basic_block>& blocks, const sbitmap G, vec<basic_block>& out)
 {
-    for (int i = 0; i < nblocks; i++)
+    for (const basic_block b : blocks)
     {
-	for (edge e : blocks[i]->succs)
+	for (edge e : b->succs)
 	{
 	    basic_block dest = contract_edge (e)->dest;
 	    if (bitmap_bit_p (G, dest->index))
@@ -598,18 +591,22 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     bitmap_clear (expr);
     bitmap_clear (reachable);
 
-    const int nblocks = scan_down (pre, post, blocks, ctx.maxsize, expr);
+    auto_vec<basic_block, 16> G;
+    scan_down (pre, post, expr, G);
 
     //printf ("G: ");
     //for (int i = 0; i < nblocks; i++)
     //    printf ("%d ", blocks[i]->index);
     //printf ("\n");
 
-    if (nblocks == 1)
-	return nblocks;
+    if (G.length () == 1)
+    {
+	blocks[0] = pre;
+	return 1;
+    }
 
     auto_vec<basic_block, 16> neighbors;
-    neighborhood (blocks, nblocks, expr, neighbors);
+    neighborhood (G, expr, neighbors);
 
     //printf ("N(G): ");
     //for (int i = 0; i < nsize; i++)
@@ -626,9 +623,9 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     }
 
     int k = 0;
-    for (int i = 0; i < nblocks; i++)
-	if (bitmap_bit_p (expr, blocks[i]->index))
-	    blocks[k++] = blocks[i];
+    for (basic_block b : G)
+	if (bitmap_bit_p (expr, b->index))
+	    blocks[k++] = b;
     return k;
 }
 
