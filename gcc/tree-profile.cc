@@ -622,7 +622,7 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     for (int i = 0; i < nsize; i++)
     {
 	bitmap_clear (ancestors);
-	for (edge e : neighborhood[i]->preds) // TODO: must preds be filtered on conditional?
+	for (edge e : neighborhood[i]->preds)
 	    scan_up (ancestors, e->src, pre, reachable, stack);
 	bitmap_and (expr, expr, ancestors);
     }
@@ -859,20 +859,20 @@ find_conditions (
 	free_dom = true;
     }
 
-    conds_ctx ctx (n_basic_blocks_for_fn (fn));
+    const int nblocks = n_basic_blocks_for_fn (fn);
+
+    conds_ctx ctx (nblocks);
     ctx.blocks = blocks;
     ctx.sizes = sizes + 1;
     ctx.maxsize = maxsize;
     sizes[0] = sizes[1] = 0;
 
     auto_vec<basic_block, 16> dfs;
-    dfs.safe_grow (n_basic_blocks_for_fn (fn));
+    dfs.safe_grow (nblocks);
     const basic_block entry = ENTRY_BLOCK_PTR_FOR_FN (fn);
     const basic_block exit = ENTRY_BLOCK_PTR_FOR_FN (fn);
-    int n = dfs_enumerate_from (entry, 0, yes, dfs.address (), dfs.length (),
-				exit);
+    int n = dfs_enumerate_from (entry, 0, yes, dfs.address (), nblocks, exit);
     dfs.truncate (n);
-
     make_index_map (dfs, n_basic_blocks_for_fn (fn), ctx.index_map);
 
     //printf ("digraph { // %s\n", current_function_name ());
