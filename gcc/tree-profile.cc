@@ -298,11 +298,9 @@ contract_edge (edge e)
 	if (is_conditional_p (dest))
 	    return e;
 
-	edge succe = single_edge (dest->succs);
-	if (!succe)
+	e = single_edge (dest->succs);
+	if (!e)
 	    return source;
-
-	e = succe;
     }
 }
 
