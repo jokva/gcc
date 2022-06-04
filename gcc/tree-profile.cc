@@ -821,19 +821,13 @@ find_conditions (struct function *fn, basic_block *blocks, int *sizes)
 {
     record_loop_exits ();
     mark_dfs_back_edges (fn);
-    bool free_dom = false;
-    bool free_post_dom = false;
-    if (!dom_info_available_p (CDI_POST_DOMINATORS))
-    {
-	calculate_dominance_info (CDI_POST_DOMINATORS);
-	free_post_dom = true;
-    }
 
-    if (!dom_info_available_p (CDI_DOMINATORS))
-    {
+    const bool dom_available = dom_info_available_p (CDI_DOMINATORS);
+    const bool post_dom_available = dom_info_available_p (CDI_POST_DOMINATORS);
+    if (!dom_available)
 	calculate_dominance_info (CDI_DOMINATORS);
-	free_dom = true;
-    }
+    if (!post_dom_available)
+	calculate_dominance_info (CDI_POST_DOMINATORS);
 
     const int nblocks = n_basic_blocks_for_fn (fn);
     conds_ctx ctx (nblocks);
@@ -894,10 +888,10 @@ find_conditions (struct function *fn, basic_block *blocks, int *sizes)
     for (unsigned i = 0; i < ctx.blocks.length (); ++i)
 	blocks[i] = ctx.blocks[i];
 
-    if (free_post_dom)
-	free_dominance_info (CDI_POST_DOMINATORS);
-    if (free_dom)
+    if (!dom_available)
 	free_dominance_info (CDI_DOMINATORS);
+    if (!post_dom_available)
+	free_dominance_info (CDI_POST_DOMINATORS);
 
     return ctx.sizes.length ();
 }
