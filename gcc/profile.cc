@@ -69,7 +69,7 @@ along with GCC; see the file COPYING3.  If not see
 
 #include "profile.h"
 
-int find_conditions (struct function*, basic_block*, int*, int);
+int find_conditions (struct function*, basic_block*, int*);
 int instrument_decisions (basic_block*, int, int);
 
 /* Map from BBs/edges to gcov counters.  */
@@ -1546,8 +1546,7 @@ branch_prob (bool thunk)
       auto_vec<int> sizes (max_sizes);
       sizes.quick_grow (max_sizes);
 
-      int nconds = find_conditions (cfun, blocks.address (), sizes.address (),
-				    max_blocks);
+      int nconds = find_conditions (cfun, blocks.address (), sizes.address ());
       total_num_conds += nconds;
 
       if (coverage_counter_alloc (GCOV_COUNTER_CONDS, 2 * nconds))

@@ -85,13 +85,8 @@ namespace
 struct conds_ctx
 {
     /* Output arrays allocated by the caller.  */
-    basic_block *blocks;
+    auto_vec<basic_block, 32> blocks;
     auto_vec<int, 16> sizes;
-
-    /* The size of the blocks buffer.  This is just bug protection,
-       the caller should have allocated enough memory for blocks to never get
-       this many elements. */
-    int maxsize;
 
     /* Bitmap of the processed blocks.  Bit n set means basic_block->index has
        been processed either explicitly or as a part of an expression. */
@@ -109,20 +104,20 @@ struct conds_ctx
        make up the same boolean expression. */
     auto_vec<int, 16> index_map;
 
-    explicit conds_ctx (unsigned size) noexcept (true) : maxsize (0),
+    explicit conds_ctx (unsigned size) noexcept (true) :
     marks (size), expr (size), G1 (size), G2 (size)
     {
+	blocks.reserve (size * 3);
 	bitmap_clear (marks);
     }
 
     /* Commit the buffered n-term expression including outcome nodes.  nblocks
        should be the number of nodes (terms) in the expression, without the
        true/false outcome nodes. */
-    void commit (int nblocks) noexcept (true)
+    void commit (const vec<basic_block>& expr) noexcept (true)
     {
-	blocks  += nblocks + 2;
-	sizes.safe_push (nblocks + 2);
-	maxsize -= nblocks + 2;
+	blocks.safe_splice (expr);
+	sizes.safe_push (expr.length ());
     }
 
     /* Mark a node as processed so nodes are not processed twice for example in
@@ -573,10 +568,9 @@ neighborhood (vec<basic_block>& blocks, const sbitmap G, vec<basic_block>& out)
    Make a cut C = (G, G') by following all condition edges from pre and find
    the neighborhood of G.  The first conditional expression is made up of the
    intersection of ancestors of every node in the neighborhood. */
-int
-find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
+void
+find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post, vec<basic_block>& out)
 {
-    basic_block *blocks = ctx.blocks;
     sbitmap expr = ctx.expr;
     sbitmap reachable = ctx.G1;
     sbitmap ancestors = ctx.G2;
@@ -593,8 +587,8 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
 
     if (G.length () == 1)
     {
-	blocks[0] = pre;
-	return 1;
+	out.safe_push (pre);
+	return;
     }
 
     auto_vec<basic_block, 16> neighbors;
@@ -614,11 +608,9 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
 	bitmap_and (expr, expr, ancestors);
     }
 
-    int k = 0;
     for (basic_block b : G)
 	if (bitmap_bit_p (expr, b->index))
-	    blocks[k++] = b;
-    return k;
+	    out.safe_push (b);
 }
 
 /* Emit lhs = op1 <op> op2 on edges.  This emits non-atomic instructions and
@@ -726,14 +718,15 @@ collect_conditions (conds_ctx& ctx, basic_block block)
     }
 
     basic_block post = get_immediate_dominator (CDI_POST_DOMINATORS, block);
-    const int nblocks = find_first_conditional (ctx, block, post);
-    ctx.mark (ctx.blocks, nblocks);
+    auto_vec<basic_block, 16> blocks;
+    find_first_conditional (ctx, block, post, blocks);
+    ctx.mark (blocks.address (), blocks.length ());
 
     // TODO: de-lambda
     auto cmp = [&ctx](basic_block l, basic_block r) {
 	return ctx.index_map[l->index] < ctx.index_map[r->index];
     };
-    std::sort (ctx.blocks, ctx.blocks + nblocks, cmp);
+    std::sort (blocks.begin (), blocks.end (), cmp);
 
     //printf ("B: ");
     //for (int i = 0; i < nblocks; i++)
@@ -741,20 +734,19 @@ collect_conditions (conds_ctx& ctx, basic_block block)
     //printf ("// t = %d, f = %d\n", out.t->index, out.f->index);
     //printf("\n");
 
-    if (size_t (nblocks) <= CONDITIONS_MAX_TERMS)
+    if (blocks.length () <= CONDITIONS_MAX_TERMS)
     {
-	basic_block last = ctx.blocks[nblocks - 1];
-	outcomes out = conditional_succs (last);
-	ctx.blocks[nblocks+0] = out.t;
-	ctx.blocks[nblocks+1] = out.f;
-	ctx.commit (nblocks);
+	outcomes out = conditional_succs (blocks.last ());
+	blocks.safe_push (out.t);
+	blocks.safe_push (out.f);
+	ctx.commit (blocks);
     }
     else
     {
 	location_t loc = gimple_location (gsi_stmt (gsi_last_bb (block)));
 	warning_at (loc, OPT_Wcoverage_too_many_conditions,
-		    "Too many conditions (found %d); giving up coverage",
-		    nblocks);
+		    "Too many conditions (found %u); giving up coverage",
+		    blocks.length ());
     }
 }
 
@@ -825,11 +817,7 @@ bool yes (const_basic_block, const void *) {
        little run-time cost and is guaranteed to be sufficient.
  */
 int
-find_conditions (
-    struct function *fn,
-    basic_block *blocks,
-    int *sizes,
-    int maxsize)
+find_conditions (struct function *fn, basic_block *blocks, int *sizes)
 {
     record_loop_exits ();
     mark_dfs_back_edges (fn);
@@ -848,10 +836,7 @@ find_conditions (
     }
 
     const int nblocks = n_basic_blocks_for_fn (fn);
-
     conds_ctx ctx (nblocks);
-    ctx.blocks = blocks;
-    ctx.maxsize = maxsize;
 
     auto_vec<basic_block, 16> dfs;
     dfs.safe_grow (nblocks);
@@ -905,6 +890,9 @@ find_conditions (
     sizes[0] = sizes[1] = 0;
     for (unsigned i = 0; i < ctx.sizes.length (); ++i)
 	sizes[i + 1] = ctx.sizes[i] + sizes[i];
+
+    for (unsigned i = 0; i < ctx.blocks.length (); ++i)
+	blocks[i] = ctx.blocks[i];
 
     if (free_post_dom)
 	free_dominance_info (CDI_POST_DOMINATORS);
