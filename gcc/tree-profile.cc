@@ -872,7 +872,7 @@ find_conditions (
     const basic_block exit = ENTRY_BLOCK_PTR_FOR_FN (fn);
     int n = dfs_enumerate_from (entry, 0, yes, dfs.address (), nblocks, exit);
     dfs.truncate (n);
-    make_index_map (dfs, n_basic_blocks_for_fn (fn), ctx.index_map);
+    make_index_map (dfs, nblocks, ctx.index_map);
 
     //printf ("digraph { // %s\n", current_function_name ());
     //basic_block b;
