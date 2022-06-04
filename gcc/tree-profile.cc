@@ -566,11 +566,10 @@ scan_down (basic_block pre, basic_block post, basic_block *out, int maxsize,
 
 /* Find the neighborhood of the graph G = [blocks, blocks+n), the
    successors of nodes in G that are not also in G. */
-int
-neighborhood (basic_block *blocks, int nblocks, const sbitmap G)
+void
+neighborhood (basic_block *blocks, int nblocks, const sbitmap G,
+	      vec<basic_block>& out)
 {
-    int n = 0;
-    basic_block *out = blocks + nblocks;
     for (int i = 0; i < nblocks; i++)
     {
 	for (edge e : blocks[i]->succs)
@@ -578,11 +577,10 @@ neighborhood (basic_block *blocks, int nblocks, const sbitmap G)
 	    basic_block dest = contract_edge (e)->dest;
 	    if (bitmap_bit_p (G, dest->index))
 		continue;
-	    if (index_of (dest, out, n) == -1)
-		out[n++] = dest;
+	    if (!out.contains (dest))
+		out.safe_push (dest);
 	}
     }
-    return n;
 }
 
 /* Find and isolate the first expression between two dominators.
@@ -610,19 +608,19 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     if (nblocks == 1)
 	return nblocks;
 
-    const int nsize = neighborhood (blocks, nblocks, expr);
-    bitmap_copy (reachable, expr);
-    basic_block *neighborhood = blocks + nblocks;
+    auto_vec<basic_block, 16> neighbors;
+    neighborhood (blocks, nblocks, expr, neighbors);
 
     //printf ("N(G): ");
     //for (int i = 0; i < nsize; i++)
     //    printf ("%d ", neighborhood[i]->index);
     //printf ("\n");
 
-    for (int i = 0; i < nsize; i++)
+    bitmap_copy (reachable, expr);
+    for (const basic_block neighbor : neighbors)
     {
 	bitmap_clear (ancestors);
-	for (edge e : neighborhood[i]->preds)
+	for (edge e : neighbor->preds)
 	    scan_up (ancestors, e->src, pre, reachable);
 	bitmap_and (expr, expr, ancestors);
     }
