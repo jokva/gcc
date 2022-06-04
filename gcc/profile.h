@@ -85,7 +85,10 @@ public:
 
     int find_conditions (struct function*);
 
-//private:
+    array_slice<basic_block> get_blocks (unsigned) noexcept (true);
+    array_slice<gcov_type_unsigned> get_masks (unsigned) noexcept (true);
+
+private:
     auto_vec<basic_block, 32> blocks;
     auto_vec<int, 16> spans;
     auto_vec<gcov_type_unsigned, 32> masking_vectors;

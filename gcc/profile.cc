@@ -1546,13 +1546,16 @@ branch_prob (bool thunk)
 	      offset = gcov_write_tag (GCOV_TAG_CONDS);
 	  for (int i = 0; i < nconds; ++i)
 	  {
-	      const int idx = cov.spans[i];
-	      const int len = cov.spans[i + 1] - idx;
-	      basic_block *itr = cov.blocks.address () + idx;
-	      const int terms = instrument_decisions (itr, len, i, cov.masking_vectors.begin () + 2*idx);
+	      array_slice<basic_block> expr = cov.get_blocks (i);
+	      array_slice<gcov_type_unsigned> masks = cov.get_masks (i);
+	      gcc_assert (expr.is_valid ());
+	      gcc_assert (masks.is_valid ());
+
+	      int terms = instrument_decisions (expr.begin (), expr.size (), i,
+						masks.begin ());
 	      if (output_to_file)
 	      {
-		  gcov_write_unsigned (cov.blocks[idx]->index);
+		  gcov_write_unsigned (expr.front ()->index);
 		  gcov_write_unsigned (terms);
 	      }
 	  }

@@ -174,6 +174,15 @@ index_of (const_basic_block needle, const const_basic_block *blocks, int size)
     return -1;
 }
 
+template < typename Span >
+int index_of (const basic_block needle, const Span& blocks)
+{
+    for (int i = 0; i < int(blocks.size ()); i++)
+	if (blocks[i] == needle)
+	    return i;
+    return -1;
+}
+
 /* Returns true if this is a conditional node, i.e. it has outgoing true and
    false edges. */
 bool
@@ -436,17 +445,18 @@ TODO: doc algo
    the the kth term is masked by the node-outcome. */
 void
 masking_vector (
-    const basic_block *blocks,
-    int nblocks,
+    array_slice<basic_block> blocks,
     gcov_type_unsigned *masks)
 {
+    gcc_assert (!blocks.empty ());
     auto_sbitmap marks (n_basic_blocks_for_fn (cfun));
     auto_vec<basic_block, 32> queue;
 
-    for (int i = 1; i < nblocks; i++)
+    array_slice<basic_block> inner (blocks.begin () + 1, blocks.size () - 1);
+    for (basic_block b : inner)
     {
-        for (edge e1 : blocks[i]->preds)
-        for (edge e2 : blocks[i]->preds)
+        for (edge e1 : b->preds)
+        for (edge e2 : b->preds)
         {
 	    if (e1 == e2)
 		continue;
@@ -456,8 +466,8 @@ masking_vector (
 	    if (!flag)
 		continue;
 
-	    const int i1 = index_of (e1->src, blocks, nblocks);
-	    const int i2 = index_of (e2->src, blocks, nblocks);
+	    const int i1 = index_of (e1->src, blocks);
+	    const int i2 = index_of (e2->src, blocks);
 	    if (i1 == -1 || i2 == -1)
 		continue;
 	    if (i1 > i2)
@@ -485,7 +495,7 @@ masking_vector (
 		if (bitmap_bit_p (marks, succs.t->index) &&
 		    bitmap_bit_p (marks, succs.f->index))
 		{
-		    const int index = index_of (q, blocks, nblocks);
+		    const int index = index_of (q, blocks);
 		    if (index == -1)
 			continue;
 
@@ -752,6 +762,28 @@ bool yes (const_basic_block, const void *) {
 
 }
 
+array_slice<basic_block>
+condition_coverage::get_blocks (unsigned n) noexcept (true)
+{
+    if (n >= spans.length ())
+	return array_slice<basic_block>::invalid ();
+
+    basic_block *begin = blocks.begin () + spans[n];
+    basic_block *end = blocks.begin () + spans[n + 1];
+    return array_slice<basic_block> (begin, end - begin);
+}
+
+array_slice<gcov_type_unsigned>
+condition_coverage::get_masks (unsigned n) noexcept (true)
+{
+    if (n >= spans.length ())
+	return array_slice<gcov_type_unsigned>::invalid ();
+
+    gcov_type_unsigned *begin = masking_vectors.begin () + 2*spans[n];
+    gcov_type_unsigned *end = masking_vectors.begin () + 2*spans[n + 1];
+    return array_slice<gcov_type_unsigned> (begin, end - begin);
+}
+
 /* Condition coverage (MC/DC)
 
    Algorithm
@@ -889,16 +921,15 @@ condition_coverage::find_conditions (struct function *fn)
     for (int s : ctx.sizes)
 	spans.safe_push (spans.last () + s);
 
-    masking_vectors.reserve (2 * blocks.length ());
+    // TODO: must be cleared; if reset (), truncate
+    masking_vectors.safe_grow_cleared (2 * spans.last());
     for (unsigned i = 0; i < ctx.sizes.length (); i++)
     {
-	const int idx = spans[i];
-	const int len = spans[i + 1] - idx;
-	basic_block *itr = blocks.begin () + idx;
-
-	const unsigned oldlen = masking_vectors.length ();
-	masking_vectors.safe_grow_cleared (oldlen + 2*len);
-	masking_vector (itr, len, masking_vectors.begin () + oldlen);
+	array_slice<basic_block> expr = get_blocks (i);
+	array_slice<gcov_type_unsigned> masks = get_masks (i);
+	gcc_assert (expr.is_valid ());
+	gcc_assert (masks.is_valid ());
+	masking_vector (expr, masks.begin ());
     }
 
     return ctx.sizes.length ();
