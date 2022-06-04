@@ -325,20 +325,22 @@ contract_edge_up (edge e)
    dfs_enumerate_from () won't work as the filter function needs edge
    information. */
 void
-scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
-	 basic_block *stack)
+scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G)
 {
     if (!bitmap_bit_p (G, pre->index))
 	return;
 
-    stack[0] = pre;
     bitmap_set_bit (ancestors, pre->index);
     bitmap_set_bit (ancestors, post->index);
     if (pre == post)
 	return;
-    for (int n = 0; n >= 0; n--)
+
+    auto_vec<basic_block, 16> stack;
+    stack.safe_push (pre);
+
+    while (!stack.is_empty())
     {
-	basic_block b = stack[n];
+	basic_block b = stack.pop ();
 	if (single (b->preds))
 	{
 	    edge e = single_edge (b->preds);
@@ -354,7 +356,7 @@ scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G,
 	    if (!bitmap_bit_p (G, e->src->index))
 		continue;
 	    bitmap_set_bit (ancestors, src->index);
-	    stack[n++] = src;
+	    stack.safe_push (src);
 	}
     }
 }
@@ -611,7 +613,6 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     const int nsize = neighborhood (blocks, nblocks, expr);
     bitmap_copy (reachable, expr);
     basic_block *neighborhood = blocks + nblocks;
-    basic_block *stack = neighborhood + nsize;
 
     //printf ("N(G): ");
     //for (int i = 0; i < nsize; i++)
@@ -622,7 +623,7 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post)
     {
 	bitmap_clear (ancestors);
 	for (edge e : neighborhood[i]->preds)
-	    scan_up (ancestors, e->src, pre, reachable, stack);
+	    scan_up (ancestors, e->src, pre, reachable);
 	bitmap_and (expr, expr, ancestors);
     }
 
