@@ -86,16 +86,12 @@ struct conds_ctx
 {
     /* Output arrays allocated by the caller.  */
     basic_block *blocks;
-    int *sizes;
+    auto_vec<int, 16> sizes;
 
     /* The size of the blocks buffer.  This is just bug protection,
        the caller should have allocated enough memory for blocks to never get
        this many elements. */
     int maxsize;
-
-    /* Number of expressions found - this value is the number of entries in the
-       gcov output and the parameter to gcov_counter_alloc (). */
-    int exprs;
 
     /* Bitmap of the processed blocks.  Bit n set means basic_block->index has
        been processed either explicitly or as a part of an expression. */
@@ -113,7 +109,7 @@ struct conds_ctx
        make up the same boolean expression. */
     auto_vec<int, 16> index_map;
 
-    explicit conds_ctx (unsigned size) noexcept (true) : maxsize (0), exprs (0),
+    explicit conds_ctx (unsigned size) noexcept (true) : maxsize (0),
     marks (size), expr (size), G1 (size), G2 (size)
     {
 	bitmap_clear (marks);
@@ -125,12 +121,8 @@ struct conds_ctx
     void commit (int nblocks) noexcept (true)
     {
 	blocks  += nblocks + 2;
-	*sizes  += nblocks + 2;
+	sizes.safe_push (nblocks + 2);
 	maxsize -= nblocks + 2;
-
-	exprs++;
-	sizes++;
-	*sizes = 0;
     }
 
     /* Mark a node as processed so nodes are not processed twice for example in
@@ -859,9 +851,7 @@ find_conditions (
 
     conds_ctx ctx (nblocks);
     ctx.blocks = blocks;
-    ctx.sizes = sizes + 1;
     ctx.maxsize = maxsize;
-    sizes[0] = sizes[1] = 0;
 
     auto_vec<basic_block, 16> dfs;
     dfs.safe_grow (nblocks);
@@ -912,15 +902,16 @@ find_conditions (
     gcc_assert (ctx.all_marked (dfs));
 
     /* Partial sum.  */
-    for (int i = 0; i < ctx.exprs; ++i)
-	sizes[i + 1] += sizes[i];
+    sizes[0] = sizes[1] = 0;
+    for (unsigned i = 0; i < ctx.sizes.length (); ++i)
+	sizes[i + 1] = ctx.sizes[i] + sizes[i];
 
     if (free_post_dom)
 	free_dominance_info (CDI_POST_DOMINATORS);
     if (free_dom)
 	free_dominance_info (CDI_DOMINATORS);
 
-    return ctx.exprs;
+    return ctx.sizes.length ();
 }
 
 int instrument_decisions (basic_block *blocks, int nblocks, int condno)
