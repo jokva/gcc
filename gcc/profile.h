@@ -85,13 +85,17 @@ public:
 
     int find_conditions (struct function*);
 
-    array_slice<basic_block> get_blocks (unsigned) noexcept (true);
-    array_slice<gcov_type_unsigned> get_masks (unsigned) noexcept (true);
+    /* Get the blocks for the nth conditional expression in this function. */
+    array_slice<basic_block> blocks (unsigned) noexcept (true);
+
+    /* Get the masking vectors for the nth conditional expression in this
+       function. */
+    array_slice<gcov_type_unsigned> masks (unsigned) noexcept (true);
 
 private:
-    auto_vec<basic_block, 32> blocks;
-    auto_vec<int, 16> spans;
-    auto_vec<gcov_type_unsigned, 32> masking_vectors;
+    auto_vec<int, 16> m_index;
+    auto_vec<basic_block, 32> m_blocks;
+    auto_vec<gcov_type_unsigned, 32> m_masks;
 };
 
 #endif /* PROFILE_H */

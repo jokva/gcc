@@ -444,25 +444,26 @@ TODO: doc algo
    the bitsets are masks = [a.true a.false b.true ...].  The kth bit is set if
    the the kth term is masked by the node-outcome. */
 void
-masking_vector (
-    array_slice<basic_block> blocks,
-    gcov_type_unsigned *masks)
+build_masks (conds_ctx& ctx, array_slice<basic_block> blocks,
+	     array_slice<gcov_type_unsigned> masks)
 {
     gcc_assert (!blocks.empty ());
-    auto_sbitmap marks (n_basic_blocks_for_fn (cfun));
+
+    sbitmap marks = ctx.G1;
     auto_vec<basic_block, 32> queue;
 
-    array_slice<basic_block> inner (blocks.begin () + 1, blocks.size () - 1);
-    for (basic_block b : inner)
+    // Ignore the first term as it cannot mask anything
+    array_slice<basic_block> tail (blocks.begin () + 1, blocks.size () - 1);
+
+    for (const basic_block b : tail)
     {
-        for (edge e1 : b->preds)
-        for (edge e2 : b->preds)
+	for (edge e1 : b->preds)
+	for (edge e2 : b->preds)
         {
 	    if (e1 == e2)
 		continue;
 
 	    const unsigned flag = e1->flags & e2->flags & (EDGE_CONDITION);
-	    const unsigned k = condition_index (flag);
 	    if (!flag)
 		continue;
 
@@ -481,17 +482,13 @@ masking_vector (
 	    queue.truncate (0);
 	    queue.safe_push (e1->src);
 
-	    const int m = i2*2 + k;
+	    const int m = i2*2 + condition_index (flag);
 	    while (!queue.is_empty())
 	    {
 		basic_block q = queue.pop ();
 		if (bitmap_bit_p (marks, q->index))
 		    continue;
 		outcomes succs = conditional_succs (q);
-		gcc_assert (succs);
-		if (!succs)
-		    continue;
-
 		if (bitmap_bit_p (marks, succs.t->index) &&
 		    bitmap_bit_p (marks, succs.f->index))
 		{
@@ -763,24 +760,24 @@ bool yes (const_basic_block, const void *) {
 }
 
 array_slice<basic_block>
-condition_coverage::get_blocks (unsigned n) noexcept (true)
+condition_coverage::blocks (unsigned n) noexcept (true)
 {
-    if (n >= spans.length ())
+    if (n >= m_index.length ())
 	return array_slice<basic_block>::invalid ();
 
-    basic_block *begin = blocks.begin () + spans[n];
-    basic_block *end = blocks.begin () + spans[n + 1];
+    basic_block *begin = m_blocks.begin () + m_index[n];
+    basic_block *end = m_blocks.begin () + m_index[n + 1];
     return array_slice<basic_block> (begin, end - begin);
 }
 
 array_slice<gcov_type_unsigned>
-condition_coverage::get_masks (unsigned n) noexcept (true)
+condition_coverage::masks (unsigned n) noexcept (true)
 {
-    if (n >= spans.length ())
+    if (n >= m_index.length ())
 	return array_slice<gcov_type_unsigned>::invalid ();
 
-    gcov_type_unsigned *begin = masking_vectors.begin () + 2*spans[n];
-    gcov_type_unsigned *end = masking_vectors.begin () + 2*spans[n + 1];
+    gcov_type_unsigned *begin = m_masks.begin () + 2*m_index[n];
+    gcov_type_unsigned *end = m_masks.begin () + 2*m_index[n + 1];
     return array_slice<gcov_type_unsigned> (begin, end - begin);
 }
 
@@ -849,18 +846,14 @@ condition_coverage::find_conditions (struct function *fn)
     record_loop_exits ();
     mark_dfs_back_edges (fn);
 
-    const bool dom_available = dom_info_available_p (CDI_DOMINATORS);
-    const bool post_dom_available = dom_info_available_p (CDI_POST_DOMINATORS);
-    if (!dom_available)
+    const bool have_dom = dom_info_available_p (fn, CDI_DOMINATORS);
+    const bool have_post_dom = dom_info_available_p (fn, CDI_POST_DOMINATORS);
+    if (!have_dom)
 	calculate_dominance_info (CDI_DOMINATORS);
-    if (!post_dom_available)
+    if (!have_post_dom)
 	calculate_dominance_info (CDI_POST_DOMINATORS);
 
     const int nblocks = n_basic_blocks_for_fn (fn);
-    blocks.reserve (3 * nblocks);
-    blocks.truncate (0);
-    spans.truncate (0);
-
     conds_ctx ctx (nblocks);
 
     auto_vec<basic_block, 16> dfs;
@@ -871,38 +864,6 @@ condition_coverage::find_conditions (struct function *fn)
     dfs.truncate (n);
     make_index_map (dfs, nblocks, ctx.index_map);
 
-    //printf ("digraph { // %s\n", current_function_name ());
-    //basic_block b;
-    //FOR_EACH_BB_FN(b, fn)
-    //{
-    //    for (edge e : b->succs)
-    //    {
-    //        printf ("    A%d -> A%d; // %u ", e->src->index, e->dest->index, e->flags);
-    //        if (e->flags & EDGE_FALLTHRU)
-    //    	printf ("fall-through ");
-    //        if (e->flags & EDGE_ABNORMAL)
-    //    	printf ("abnormal ");
-    //        if (e->flags & EDGE_EH)
-    //    	printf ("eh ");
-    //        if (e->flags & EDGE_PRESERVE)
-    //    	printf ("preserve ");
-    //        if (e->flags & EDGE_FAKE)
-    //    	printf ("fake ");
-    //        if (e->flags & EDGE_DFS_BACK)
-    //    	printf ("dfs-back ");
-    //        if (e->flags & EDGE_IRREDUCIBLE_LOOP)
-    //    	printf ("irreducible-loop ");
-    //        if (e->flags & EDGE_TRUE_VALUE)
-    //    	printf ("true ");
-    //        if (e->flags & EDGE_FALSE_VALUE)
-    //    	printf ("false ");
-    //        if (e->flags & EDGE_EXECUTABLE)
-    //    	printf ("executable ");
-    //        printf ("\n");
-    //    }
-    //}
-    //printf ("}\n");
-
     /* Visit all reachable nodes and collect conditions.  DFS order is
        important so the first node of a boolean expression is visited first
        (it will mark subsequent terms). */
@@ -911,25 +872,25 @@ condition_coverage::find_conditions (struct function *fn)
 
     gcc_assert (ctx.all_marked (dfs));
 
-    if (!dom_available)
-	free_dominance_info (CDI_DOMINATORS);
-    if (!post_dom_available)
-	free_dominance_info (CDI_POST_DOMINATORS);
+    if (!have_dom)
+	free_dominance_info (fn, CDI_DOMINATORS);
+    if (!have_post_dom)
+	free_dominance_info (fn, CDI_POST_DOMINATORS);
 
-    blocks.splice (ctx.blocks);
-    spans.safe_push (0);
+    m_blocks.safe_splice (ctx.blocks);
+    m_index.safe_push (0);
     for (int s : ctx.sizes)
-	spans.safe_push (spans.last () + s);
+	m_index.safe_push (m_index.last () + s);
 
     // TODO: must be cleared; if reset (), truncate
-    masking_vectors.safe_grow_cleared (2 * spans.last());
+    m_masks.safe_grow_cleared (2 * m_index.last());
     for (unsigned i = 0; i < ctx.sizes.length (); i++)
     {
-	array_slice<basic_block> expr = get_blocks (i);
-	array_slice<gcov_type_unsigned> masks = get_masks (i);
+	array_slice<basic_block> expr = blocks (i);
+	array_slice<gcov_type_unsigned> maskvectors = masks (i);
 	gcc_assert (expr.is_valid ());
-	gcc_assert (masks.is_valid ());
-	masking_vector (expr, masks.begin ());
+	gcc_assert (maskvectors.is_valid ());
+	build_masks (ctx, expr, maskvectors);
     }
 
     return ctx.sizes.length ();

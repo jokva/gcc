@@ -1546,8 +1546,8 @@ branch_prob (bool thunk)
 	      offset = gcov_write_tag (GCOV_TAG_CONDS);
 	  for (int i = 0; i < nconds; ++i)
 	  {
-	      array_slice<basic_block> expr = cov.get_blocks (i);
-	      array_slice<gcov_type_unsigned> masks = cov.get_masks (i);
+	      array_slice<basic_block> expr = cov.blocks (i);
+	      array_slice<gcov_type_unsigned> masks = cov.masks (i);
 	      gcc_assert (expr.is_valid ());
 	      gcc_assert (masks.is_valid ());
 
