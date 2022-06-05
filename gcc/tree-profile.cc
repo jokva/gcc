@@ -462,7 +462,13 @@ build_masks (conds_ctx& ctx, array_slice<basic_block> blocks,
     gcc_assert (masks.is_valid ());
 
     sbitmap marks = ctx.G1;
+    sbitmap expr = ctx.G2;
     vec<basic_block>& queue = ctx.B1;
+    const vec<int>& index_map = ctx.index_map;
+    bitmap_clear (expr);
+
+    for (const basic_block b : blocks)
+	bitmap_set_bit (expr, b->index);
 
     // Ignore the first term as it cannot mask anything
     array_slice<basic_block> tail (blocks.begin () + 1, blocks.size () - 1);
@@ -472,44 +478,48 @@ build_masks (conds_ctx& ctx, array_slice<basic_block> blocks,
 	for (edge e1 : b->preds)
 	for (edge e2 : b->preds)
         {
-	    if (e1 == e2)
-		continue;
+	    const basic_block top = e1->src;
+	    const basic_block bot = e2->src;
 
 	    const unsigned flag = e1->flags & e2->flags & (EDGE_CONDITION);
 	    if (!flag)
 		continue;
-
-	    const int i1 = index_of (e1->src, blocks);
-	    const int i2 = index_of (e2->src, blocks);
-	    if (i1 == -1 || i2 == -1)
+	    if (e1 == e2)
 		continue;
-	    if (i1 > i2)
+	    if (!bitmap_bit_p (expr, top->index))
+		continue;
+	    if (!bitmap_bit_p (expr, bot->index))
+		continue;
+	    if (index_map[top->index] > index_map[bot->index])
 		continue;
 
-	    outcomes out = conditional_succs (e1->src);
+	    outcomes out = conditional_succs (top);
 	    gcc_assert (out);
 	    bitmap_clear (marks);
 	    bitmap_set_bit (marks, out.t->index);
 	    bitmap_set_bit (marks, out.f->index);
 	    queue.truncate (0);
-	    queue.safe_push (e1->src);
+	    queue.safe_push (top);
 
-	    const int m = i2*2 + condition_index (flag);
+	    // The edge bot -> outcome triggers the masking
+	    const int term = index_of (bot, blocks.begin (), blocks.size ());
+	    const int m = term*2 + condition_index (flag);
 	    while (!queue.is_empty())
 	    {
 		basic_block q = queue.pop ();
+		/* q may have been processed & completed by being added to the
+		   queue multiple times, so check that there is still work to
+		   do before continuing. */
 		if (bitmap_bit_p (marks, q->index))
 		    continue;
+
 		outcomes succs = conditional_succs (q);
 		if (bitmap_bit_p (marks, succs.t->index) &&
 		    bitmap_bit_p (marks, succs.f->index))
 		{
 		    const int index = index_of (q, blocks);
-		    if (index == -1)
-			continue;
-
-		    gcov_type_unsigned bit = gcov_type_unsigned (1) << index;
-		    masks[m] |= bit;
+		    gcc_assert (index != -1);
+		    masks[m] |= gcov_type_unsigned (1) << index;
 		    bitmap_set_bit (marks, q->index);
 
 		    for (edge e : q->preds)
@@ -521,7 +531,8 @@ build_masks (conds_ctx& ctx, array_slice<basic_block> blocks,
 			    continue;
 			if (bitmap_bit_p (marks, e->src->index))
 			    continue;
-
+			if (!bitmap_bit_p (expr, e->src->index))
+			    continue;
 			queue.safe_push (e->src);
 		    }
 		}
@@ -1051,9 +1062,9 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno,
 		ref = unshare_expr (ref);
 		gassign *read = gimple_build_assign (tmp, accu[k]);
 		gcall *flush = gimple_build_call (atomic_ior, 3,
-						 build_addr (ref),
-						 gimple_assign_lhs (read),
-						 relaxed);
+						  build_addr (ref),
+						  gimple_assign_lhs (read),
+						  relaxed);
 
 		gsi_insert_on_edge (e, read);
 		gsi_insert_on_edge (e, flush);

@@ -66,6 +66,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "cfgloop.h"
 #include "sreal.h"
 #include "file-prefix-map.h"
+#include "stringpool.h"
 
 #include "profile.h"
 
