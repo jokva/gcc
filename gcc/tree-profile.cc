@@ -443,9 +443,11 @@ build_masks (conds_ctx& ctx, array_slice<basic_block> blocks,
 	     array_slice<gcov_type_unsigned> masks)
 {
     gcc_assert (!blocks.empty ());
+    gcc_assert (blocks.is_valid ());
+    gcc_assert (masks.is_valid ());
 
     sbitmap marks = ctx.G1;
-    auto_vec<basic_block, 32> queue;
+    vec<basic_block>& queue = ctx.B1;
 
     // Ignore the first term as it cannot mask anything
     array_slice<basic_block> tail (blocks.begin () + 1, blocks.size () - 1);
@@ -696,7 +698,7 @@ make_index_map (const vec<basic_block>& blocks, int max_index,
    might find (a || b) && c as [a c b], so the result must be sorted by the
    index map. */
 const vec<basic_block>&
-collect_conditions (conds_ctx& ctx, basic_block block)
+collect_conditions (conds_ctx& ctx, const basic_block block)
 {
     vec<basic_block>& blocks = ctx.blocks;
     blocks.truncate (0);
@@ -872,13 +874,7 @@ condition_coverage::find_conditions (struct function *fn)
     // TODO: must be cleared; if reset (), truncate
     m_masks.safe_grow_cleared (2 * m_index.last());
     for (unsigned i = 0; i < m_index.length () - 1; i++)
-    {
-	array_slice<basic_block> expr = blocks (i);
-	array_slice<gcov_type_unsigned> maskvectors = masks (i);
-	gcc_assert (expr.is_valid ());
-	gcc_assert (maskvectors.is_valid ());
-	build_masks (ctx, expr, maskvectors);
-    }
+	build_masks (ctx, blocks (i), masks (i));
 
     return m_index.length () - 1;
 }
