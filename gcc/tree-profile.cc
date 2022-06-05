@@ -24,7 +24,6 @@ along with GCC; see the file COPYING3.  If not see
 /* Generate basic block profile instrumentation and auxiliary files.
    Tree-based version.  See profile.cc for overview.  */
 
-#define INCLUDE_ALGORITHM
 #include "config.h"
 #include "system.h"
 #include "coretypes.h"
@@ -82,6 +81,15 @@ static GTY(()) tree ic_tuple_callee_field;
 namespace
 {
 
+int
+cmp_index_map (const void *lhs, const void *rhs, void *index_map)
+{
+    const_basic_block l = *(const basic_block*) lhs;
+    const_basic_block r = *(const basic_block*) rhs;
+    const vec<int>* im = (const vec<int>*) index_map;
+    return (*im)[l->index] - (*im)[r->index];
+}
+
 struct conds_ctx
 {
     /* Output arrays allocated by the caller.  */
@@ -118,15 +126,10 @@ struct conds_ctx
 	bitmap_set_bit (marks, b->index);
     }
 
-    void mark (const basic_block *blocks, int nblocks) noexcept (true)
+    void mark (const vec<basic_block>& bs) noexcept (true)
     {
-	//printf ("marking from %d: ", blocks[0]->index);
-	//for (int i = 1; i < nblocks; i++)
-	//    printf ("%d ", blocks[i]->index);
-	//printf ("\n");
-
-	for (int i = 0; i < nblocks; i++)
-	    mark (blocks[i]);
+	for (const basic_block b : bs)
+	    mark (b);
     }
 
     bool all_marked (const vec<basic_block>& reachable) const noexcept (true)
@@ -603,6 +606,7 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, vec<basic_block>& out)
     for (const basic_block b : G)
 	if (bitmap_bit_p (expr, b->index))
 	    out.safe_push (b);
+    out.sort (cmp_index_map, &ctx.index_map);
 }
 
 /* Emit lhs = op1 <op> op2 on edges.  This emits non-atomic instructions and
@@ -713,14 +717,7 @@ collect_conditions (conds_ctx& ctx, const basic_block block)
     }
 
     find_first_conditional (ctx, block, blocks);
-    ctx.mark (blocks.address (), blocks.length ());
-
-    // TODO: de-lambda
-    auto cmp = [&ctx](basic_block l, basic_block r) {
-	return ctx.index_map[l->index] < ctx.index_map[r->index];
-    };
-    std::sort (blocks.begin (), blocks.end (), cmp);
-    //ctx.sort_terms (blocks);
+    ctx.mark (blocks);
 
     if (blocks.length () <= CONDITIONS_MAX_TERMS)
     {
@@ -730,11 +727,11 @@ collect_conditions (conds_ctx& ctx, const basic_block block)
     }
     else
     {
+	blocks.truncate (0);
 	location_t loc = gimple_location (gsi_stmt (gsi_last_bb (block)));
 	warning_at (loc, OPT_Wcoverage_too_many_conditions,
 		    "Too many conditions (found %u); giving up coverage",
 		    blocks.length ());
-	blocks.truncate (0);
     }
     return blocks;
 }
@@ -766,6 +763,14 @@ condition_coverage::masks (unsigned n) noexcept (true)
     gcov_type_unsigned *begin = m_masks.begin () + 2*m_index[n];
     gcov_type_unsigned *end = m_masks.begin () + 2*m_index[n + 1];
     return array_slice<gcov_type_unsigned> (begin, end - begin);
+}
+
+unsigned
+condition_coverage::length () const noexcept (true)
+{
+    if (m_index.is_empty ())
+	return 0;
+    return m_index.length () - 1;
 }
 
 /* Condition coverage (MC/DC)
@@ -871,12 +876,69 @@ condition_coverage::find_conditions (struct function *fn)
     if (!have_post_dom)
 	free_dominance_info (fn, CDI_POST_DOMINATORS);
 
-    // TODO: must be cleared; if reset (), truncate
+    // TODO: must be grow_cleared; if reset (), truncate
     m_masks.safe_grow_cleared (2 * m_index.last());
-    for (unsigned i = 0; i < m_index.length () - 1; i++)
+    for (unsigned i = 0; i < this->length (); i++)
 	build_masks (ctx, blocks (i), masks (i));
 
-    return m_index.length () - 1;
+    //FILE *f;
+    //f = fopen ("/home/lycantrophe/allocs.dfs", "a");
+    //if (dfs.using_auto_storage ())
+    //    fputs("auto\n", f);
+    //else
+    //    fputs("alloc\n", f);
+    //fclose (f);
+
+    //f = fopen ("/home/lycantrophe/allocs.index", "a");
+    //if (m_index.using_auto_storage ())
+    //    fputs("auto\n", f);
+    //else
+    //    fputs("alloc\n", f);
+    //fclose (f);
+
+    //f = fopen ("/home/lycantrophe/allocs.blocks", "a");
+    //if (m_blocks.using_auto_storage ())
+    //    fputs("auto\n", f);
+    //else
+    //    fputs("alloc\n", f);
+    //fclose (f);
+
+    //f = fopen ("/home/lycantrophe/allocs.masks", "a");
+    //if (m_masks.using_auto_storage ())
+    //    fputs("auto\n", f);
+    //else
+    //    fputs("alloc\n", f);
+    //fclose (f);
+
+    //f = fopen ("/home/lycantrophe/allocs.index-map", "a");
+    //if (ctx.index_map.using_auto_storage ())
+    //    fputs("auto\n", f);
+    //else
+    //    fputs("alloc\n", f);
+    //fclose (f);
+
+    //f = fopen ("/home/lycantrophe/allocs.ctx-blocks", "a");
+    //if (ctx.blocks.using_auto_storage ())
+    //    fputs("auto\n", f);
+    //else
+    //    fputs("alloc\n", f);
+    //fclose (f);
+
+    //f = fopen ("/home/lycantrophe/allocs.B1", "a");
+    //if (ctx.B1.using_auto_storage ())
+    //    fputs("auto\n", f);
+    //else
+    //    fputs("alloc\n", f);
+    //fclose (f);
+
+    //f = fopen ("/home/lycantrophe/allocs.B2", "a");
+    //if (ctx.B2.using_auto_storage ())
+    //    fputs("auto\n", f);
+    //else
+    //    fputs("alloc\n", f);
+    //fclose (f);
+
+    return this->length ();
 }
 
 int instrument_decisions (basic_block *blocks, int nblocks, int condno, gcov_type_unsigned *masks)

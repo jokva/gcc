@@ -85,6 +85,8 @@ public:
 
     int find_conditions (struct function*);
 
+    unsigned length () const noexcept (true);
+
     /* Get the blocks for the nth conditional expression in this function. */
     array_slice<basic_block> blocks (unsigned) noexcept (true);
 
