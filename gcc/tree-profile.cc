@@ -173,20 +173,10 @@ struct conds_ctx
    typically very small (number of conditions, >8 is uncommon) so linear search
    should be very fast. */
 int
-index_of (const_basic_block needle, const const_basic_block *blocks, int size)
+index_of (const basic_block needle, array_slice<basic_block> blocks)
 {
+    const int size = int (blocks.size ());
     for (int i = 0; i < size; i++)
-    {
-	if (blocks[i] == needle)
-	    return i;
-    }
-    return -1;
-}
-
-template < typename Span >
-int index_of (const basic_block needle, const Span& blocks)
-{
-    for (int i = 0; i < int(blocks.size ()); i++)
 	if (blocks[i] == needle)
 	    return i;
     return -1;
@@ -480,8 +470,8 @@ build_masks (conds_ctx& ctx, array_slice<basic_block> blocks,
         {
 	    const basic_block top = e1->src;
 	    const basic_block bot = e2->src;
-
 	    const unsigned flag = e1->flags & e2->flags & (EDGE_CONDITION);
+
 	    if (!flag)
 		continue;
 	    if (e1 == e2)
@@ -502,7 +492,7 @@ build_masks (conds_ctx& ctx, array_slice<basic_block> blocks,
 	    queue.safe_push (top);
 
 	    // The edge bot -> outcome triggers the masking
-	    const int term = index_of (bot, blocks.begin (), blocks.size ());
+	    const int term = index_of (bot, blocks);
 	    const int m = term*2 + condition_index (flag);
 	    while (!queue.is_empty())
 	    {
@@ -514,27 +504,28 @@ build_masks (conds_ctx& ctx, array_slice<basic_block> blocks,
 		    continue;
 
 		outcomes succs = conditional_succs (q);
-		if (bitmap_bit_p (marks, succs.t->index) &&
-		    bitmap_bit_p (marks, succs.f->index))
-		{
-		    const int index = index_of (q, blocks);
-		    gcc_assert (index != -1);
-		    masks[m] |= gcov_type_unsigned (1) << index;
-		    bitmap_set_bit (marks, q->index);
+		if (!bitmap_bit_p (marks, succs.t->index))
+		    continue;
+		if (!bitmap_bit_p (marks, succs.f->index))
+		    continue;
 
-		    for (edge e : q->preds)
-		    {
-			e = contract_edge_up (e);
-			if (!edge_conditional_p (e))
-			    continue;
-			if (e->flags & EDGE_DFS_BACK)
-			    continue;
-			if (bitmap_bit_p (marks, e->src->index))
-			    continue;
-			if (!bitmap_bit_p (expr, e->src->index))
-			    continue;
-			queue.safe_push (e->src);
-		    }
+		const int index = index_of (q, blocks);
+		gcc_assert (index != -1);
+		masks[m] |= gcov_type_unsigned (1) << index;
+		bitmap_set_bit (marks, q->index);
+
+		for (edge e : q->preds)
+		{
+		    e = contract_edge_up (e);
+		    if (!edge_conditional_p (e))
+			continue;
+		    if (e->flags & EDGE_DFS_BACK)
+			continue;
+		    if (bitmap_bit_p (marks, e->src->index))
+			continue;
+		    if (!bitmap_bit_p (expr, e->src->index))
+			continue;
+		    queue.safe_push (e->src);
 		}
 	    }
 	}
@@ -978,6 +969,8 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno,
        their outgoing edges should not be instrumented. */
     gcc_assert (nblocks > 2);
 
+    array_slice<basic_block> body(blocks, nblocks - 2);
+
     /* Add instructions for updating the function-local accumulators.  */
     for (int i = 0; i < nblocks - 2; i++)
     {
@@ -1048,7 +1041,7 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno,
 	    /* Only instrument edges from inside the expression. Sometimes
 	       complicated control flow (like sigsetjmp and gotos) add
 	       predecessors that don't come from the boolean expression. */
-	    if (index_of (e->src, blocks, nblocks - 2) == -1)
+	    if (index_of (e->src, body) == -1)
 		continue;
 
 	    tree ref = tree_coverage_counter_ref (GCOV_COUNTER_CONDS,
@@ -1079,7 +1072,7 @@ int instrument_decisions (basic_block *blocks, int nblocks, int condno,
 	    }
 	}
     }
-    return nblocks - 2;
+    return body.size ();
 }
 
 #undef CONDITIONS_MAX_TERMS
