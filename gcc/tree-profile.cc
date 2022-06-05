@@ -81,18 +81,6 @@ static GTY(()) tree ic_tuple_callee_field;
 namespace
 {
 
-/* Compare two basic blocks by their order in the expression i.e. for (a || b)
-   then cmp_index_map (a, b, ...) < 0.  The result is undefined if lhs, rhs
-   belong to different expressions. */
-int
-cmp_index_map (const void *lhs, const void *rhs, void *index_map)
-{
-    const_basic_block l = *(const basic_block*) lhs;
-    const_basic_block r = *(const basic_block*) rhs;
-    const vec<int>* im = (const vec<int>*) index_map;
-    return (*im)[l->index] - (*im)[r->index];
-}
-
 struct conds_ctx
 {
     /* This is both a reusable shared allocation which is also used to return
@@ -167,6 +155,18 @@ struct conds_ctx
  */
 #define CONDITIONS_MAX_TERMS (sizeof (gcov_type_unsigned) * BITS_PER_UNIT)
 #define EDGE_CONDITION (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE)
+
+/* Compare two basic blocks by their order in the expression i.e. for (a || b)
+   then cmp_index_map (a, b, ...) < 0.  The result is undefined if lhs, rhs
+   belong to different expressions. */
+int
+cmp_index_map (const void *lhs, const void *rhs, void *index_map)
+{
+    const_basic_block l = *(const basic_block*) lhs;
+    const_basic_block r = *(const basic_block*) rhs;
+    const vec<int>* im = (const vec<int>*) index_map;
+    return (*im)[l->index] - (*im)[r->index];
+}
 
 /* Find the index of needle in blocks; return -1 if not found. This has two
    uses, sometimes for the index and sometimes for set member checks.  Sets are
