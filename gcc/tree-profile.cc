@@ -86,33 +86,28 @@ struct conds_ctx
 {
     /* Output arrays allocated by the caller.  */
     auto_vec<basic_block, 32> blocks;
-    auto_vec<int, 16> sizes;
 
     /* Bitmap of the processed blocks.  Bit n set means basic_block->index has
        been processed either explicitly or as a part of an expression. */
     auto_sbitmap marks;
 
     /* Pre-allocate bitmaps for per-function book keeping.  This is pure
-       instance reuse and the bitmaps carries no data between function calls. */
-    auto_sbitmap expr;
+       instance reuse and the bitmaps carry no data between function calls. */
     auto_sbitmap G1;
     auto_sbitmap G2;
+    auto_sbitmap G3;
     auto_vec<int, 16> index_map;
 
+    /* Pre-allocate buffers for per-function book keeping.  This is pure
+       instance reuse and the vectors carry no data between function calls. */
+    auto_vec<basic_block, 16> B1;
+    auto_vec<basic_block, 16> B2;
+
     explicit conds_ctx (unsigned size) noexcept (true) :
-    marks (size), expr (size), G1 (size), G2 (size)
+    marks (size), G1 (size), G2 (size), G3 (size)
     {
 	blocks.reserve (size * 3);
 	bitmap_clear (marks);
-    }
-
-    /* Commit the buffered n-term expression including outcome nodes.  nblocks
-       should be the number of nodes (terms) in the expression, without the
-       true/false outcome nodes. */
-    void commit (const vec<basic_block>& expr) noexcept (true)
-    {
-	blocks.safe_splice (expr);
-	sizes.safe_push (expr.length ());
     }
 
     /* Mark a node as processed so nodes are not processed twice for example in
@@ -571,38 +566,31 @@ neighborhood (vec<basic_block>& blocks, const sbitmap G, vec<basic_block>& out)
    the neighborhood of G.  The first conditional expression is made up of the
    intersection of ancestors of every node in the neighborhood. */
 void
-find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post, vec<basic_block>& out)
+find_first_conditional (conds_ctx &ctx, basic_block pre, vec<basic_block>& out)
 {
-    sbitmap expr = ctx.expr;
-    sbitmap reachable = ctx.G1;
-    sbitmap ancestors = ctx.G2;
+    sbitmap expr = ctx.G1;
+    sbitmap reachable = ctx.G2;
+    sbitmap ancestors = ctx.G3;
     bitmap_clear (expr);
     bitmap_clear (reachable);
 
-    auto_vec<basic_block, 16> G;
+    vec<basic_block>& G = ctx.B1;
+    vec<basic_block>& NG = ctx.B2;
+    G.truncate (0);
+    NG.truncate (0);
+
+    basic_block post = get_immediate_dominator (CDI_POST_DOMINATORS, pre);
     scan_down (pre, post, expr, G);
-
-    //printf ("G: ");
-    //for (int i = 0; i < nblocks; i++)
-    //    printf ("%d ", blocks[i]->index);
-    //printf ("\n");
-
     if (G.length () == 1)
     {
 	out.safe_push (pre);
 	return;
     }
 
-    auto_vec<basic_block, 16> neighbors;
-    neighborhood (G, expr, neighbors);
-
-    //printf ("N(G): ");
-    //for (int i = 0; i < nsize; i++)
-    //    printf ("%d ", neighborhood[i]->index);
-    //printf ("\n");
-
+    neighborhood (G, expr, NG);
     bitmap_copy (reachable, expr);
-    for (const basic_block neighbor : neighbors)
+
+    for (const basic_block neighbor : NG)
     {
 	bitmap_clear (ancestors);
 	for (edge e : neighbor->preds)
@@ -610,7 +598,7 @@ find_first_conditional (conds_ctx &ctx, basic_block pre, basic_block post, vec<b
 	bitmap_and (expr, expr, ancestors);
     }
 
-    for (basic_block b : G)
+    for (const basic_block b : G)
 	if (bitmap_bit_p (expr, b->index))
 	    out.safe_push (b);
 }
@@ -707,21 +695,22 @@ make_index_map (const vec<basic_block>& blocks, int max_index,
    Walking is not guaranteed to find nodes in the order of the expression, it
    might find (a || b) && c as [a c b], so the result must be sorted by the
    index map. */
-void
+const vec<basic_block>&
 collect_conditions (conds_ctx& ctx, basic_block block)
 {
+    vec<basic_block>& blocks = ctx.blocks;
+    blocks.truncate (0);
+
     if (bitmap_bit_p (ctx.marks, block->index))
-	return;
+	return blocks;
 
     if (!block_conditional_p (block))
     {
 	ctx.mark (block);
-	return;
+	return blocks;
     }
 
-    basic_block post = get_immediate_dominator (CDI_POST_DOMINATORS, block);
-    auto_vec<basic_block, 16> blocks;
-    find_first_conditional (ctx, block, post, blocks);
+    find_first_conditional (ctx, block, blocks);
     ctx.mark (blocks.address (), blocks.length ());
 
     // TODO: de-lambda
@@ -729,19 +718,13 @@ collect_conditions (conds_ctx& ctx, basic_block block)
 	return ctx.index_map[l->index] < ctx.index_map[r->index];
     };
     std::sort (blocks.begin (), blocks.end (), cmp);
-
-    //printf ("B: ");
-    //for (int i = 0; i < nblocks; i++)
-    //    printf ("%d ", ctx.blocks[i]->index);
-    //printf ("// t = %d, f = %d\n", out.t->index, out.f->index);
-    //printf("\n");
+    //ctx.sort_terms (blocks);
 
     if (blocks.length () <= CONDITIONS_MAX_TERMS)
     {
 	outcomes out = conditional_succs (blocks.last ());
 	blocks.safe_push (out.t);
 	blocks.safe_push (out.f);
-	ctx.commit (blocks);
     }
     else
     {
@@ -749,7 +732,9 @@ collect_conditions (conds_ctx& ctx, basic_block block)
 	warning_at (loc, OPT_Wcoverage_too_many_conditions,
 		    "Too many conditions (found %u); giving up coverage",
 		    blocks.length ());
+	blocks.truncate (0);
     }
+    return blocks;
 }
 
 /* Used for dfs_enumerate_from () to include all reachable nodes. */
@@ -867,9 +852,16 @@ condition_coverage::find_conditions (struct function *fn)
     /* Visit all reachable nodes and collect conditions.  DFS order is
        important so the first node of a boolean expression is visited first
        (it will mark subsequent terms). */
-    for (basic_block b : dfs)
-	collect_conditions (ctx, b);
-
+    m_index.safe_push (0);
+    for (const basic_block b : dfs)
+    {
+	const vec<basic_block>& expr = collect_conditions (ctx, b);
+	if (!expr.is_empty ())
+	{
+	    m_blocks.safe_splice (expr);
+	    m_index.safe_push (m_blocks.length ());
+	}
+    }
     gcc_assert (ctx.all_marked (dfs));
 
     if (!have_dom)
@@ -877,14 +869,9 @@ condition_coverage::find_conditions (struct function *fn)
     if (!have_post_dom)
 	free_dominance_info (fn, CDI_POST_DOMINATORS);
 
-    m_blocks.safe_splice (ctx.blocks);
-    m_index.safe_push (0);
-    for (int s : ctx.sizes)
-	m_index.safe_push (m_index.last () + s);
-
     // TODO: must be cleared; if reset (), truncate
     m_masks.safe_grow_cleared (2 * m_index.last());
-    for (unsigned i = 0; i < ctx.sizes.length (); i++)
+    for (unsigned i = 0; i < m_index.length () - 1; i++)
     {
 	array_slice<basic_block> expr = blocks (i);
 	array_slice<gcov_type_unsigned> maskvectors = masks (i);
@@ -893,7 +880,7 @@ condition_coverage::find_conditions (struct function *fn)
 	build_masks (ctx, expr, maskvectors);
     }
 
-    return ctx.sizes.length ();
+    return m_index.length () - 1;
 }
 
 int instrument_decisions (basic_block *blocks, int nblocks, int condno, gcov_type_unsigned *masks)
