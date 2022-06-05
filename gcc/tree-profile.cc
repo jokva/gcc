@@ -577,7 +577,7 @@ neighborhood (vec<basic_block>& blocks, const sbitmap G, vec<basic_block>& out)
     }
 }
 
-/* Find and isolate the first expression between two dominators.
+/* Find and isolate the expression starting at pre.
 
    Make a cut C = (G, G') by following all condition edges from pre and find
    the neighborhood of G.  The first conditional expression is made up of the
@@ -953,24 +953,16 @@ condition_coverage::find_conditions (struct function *fn)
     return this->length ();
 }
 
-int instrument_decisions (basic_block *blocks, int nblocks, int condno, gcov_type_unsigned *masks)
+int instrument_decisions (basic_block *blocks, int nblocks, int condno,
+			  tree *accu, gcov_type_unsigned *masks)
 {
-    /* Insert function-local accumulators per decision.  */
-    // TODO: single accumulator reset between conditions
-    // TODO: only problem is sequencing of conditions
-    tree accu[2] = {
-	build_decl (UNKNOWN_LOCATION, VAR_DECL,
-		    get_identifier ("__conditions_accu_t"), gcov_type_node),
-	build_decl (UNKNOWN_LOCATION, VAR_DECL,
-		    get_identifier ("__conditions_accu_f"), gcov_type_node),
-    };
-    for (tree acc : accu)
+    /* Zero the local accumulators. */
+    tree zero = build_int_cst (get_gcov_type (), 0);
+    for (edge e : blocks[0]->succs)
     {
-	tree zero = build_int_cst (gcov_type_node, 0);
-	for (edge e : ENTRY_BLOCK_PTR_FOR_FN (cfun)->succs)
-	    gsi_insert_on_edge (e, gimple_build_assign (acc, zero));
+	gsi_insert_on_edge (e, gimple_build_assign (accu[0], zero));
+	gsi_insert_on_edge (e, gimple_build_assign (accu[1], zero));
     }
-
     /* The true/false target blocks are included in the nblocks set, but
        their outgoing edges should not be instrumented. */
     gcc_assert (nblocks > 2);

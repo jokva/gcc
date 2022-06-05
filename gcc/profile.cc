@@ -69,7 +69,7 @@ along with GCC; see the file COPYING3.  If not see
 
 #include "profile.h"
 
-int instrument_decisions (basic_block*, int, int, gcov_type_unsigned*);
+int instrument_decisions (basic_block*, int, int, tree*, gcov_type_unsigned*);
 
 /* Map from BBs/edges to gcov counters.  */
 vec<gcov_type> bb_gcov_counts;
@@ -1540,28 +1540,42 @@ branch_prob (bool thunk)
       total_num_conds += nconds;
 
       if (coverage_counter_alloc (GCOV_COUNTER_CONDS, 2 * nconds))
-      {
+	{
+	  /* Add two extra variables to the function for the local
+	     accumulators, which are zero'd on the entry of a new conditional.
+	     The local accumulators are conceptually independent, but are
+	     reused so that less extra stack spaced required which matters for
+	     embedded targets (who are particularly interested in condition
+	     coverage). */
+	  tree accu[2] = {
+	    build_decl (UNKNOWN_LOCATION, VAR_DECL,
+			get_identifier ("__accu_t"), get_gcov_type ()),
+	    build_decl (UNKNOWN_LOCATION, VAR_DECL,
+			get_identifier ("__accu_f"), get_gcov_type ()),
+	  };
+
 	  gcov_position_t offset {};
 	  if (output_to_file)
 	      offset = gcov_write_tag (GCOV_TAG_CONDS);
+
 	  for (int i = 0; i < nconds; ++i)
-	  {
+	    {
 	      array_slice<basic_block> expr = cov.blocks (i);
 	      array_slice<gcov_type_unsigned> masks = cov.masks (i);
 	      gcc_assert (expr.is_valid ());
 	      gcc_assert (masks.is_valid ());
 
 	      int terms = instrument_decisions (expr.begin (), expr.size (), i,
-						masks.begin ());
+						accu, masks.begin ());
 	      if (output_to_file)
-	      {
+		{
 		  gcov_write_unsigned (expr.front ()->index);
 		  gcov_write_unsigned (terms);
-	      }
-	  }
+		}
+	    }
 	  if (output_to_file)
 	      gcov_write_length (offset);
-      }
+	}
     }
 
   /* For each edge not on the spanning tree, add counting code.  */
