@@ -895,63 +895,6 @@ condition_coverage::find_conditions (struct function *fn)
     for (unsigned i = 0; i < this->length (); i++)
 	build_masks (ctx, blocks (i), masks (i));
 
-    //FILE *f;
-    //f = fopen ("/home/lycantrophe/allocs.dfs", "a");
-    //if (dfs.using_auto_storage ())
-    //    fputs("auto\n", f);
-    //else
-    //    fputs("alloc\n", f);
-    //fclose (f);
-
-    //f = fopen ("/home/lycantrophe/allocs.index", "a");
-    //if (m_index.using_auto_storage ())
-    //    fputs("auto\n", f);
-    //else
-    //    fputs("alloc\n", f);
-    //fclose (f);
-
-    //f = fopen ("/home/lycantrophe/allocs.blocks", "a");
-    //if (m_blocks.using_auto_storage ())
-    //    fputs("auto\n", f);
-    //else
-    //    fputs("alloc\n", f);
-    //fclose (f);
-
-    //f = fopen ("/home/lycantrophe/allocs.masks", "a");
-    //if (m_masks.using_auto_storage ())
-    //    fputs("auto\n", f);
-    //else
-    //    fputs("alloc\n", f);
-    //fclose (f);
-
-    //f = fopen ("/home/lycantrophe/allocs.index-map", "a");
-    //if (ctx.index_map.using_auto_storage ())
-    //    fputs("auto\n", f);
-    //else
-    //    fputs("alloc\n", f);
-    //fclose (f);
-
-    //f = fopen ("/home/lycantrophe/allocs.ctx-blocks", "a");
-    //if (ctx.blocks.using_auto_storage ())
-    //    fputs("auto\n", f);
-    //else
-    //    fputs("alloc\n", f);
-    //fclose (f);
-
-    //f = fopen ("/home/lycantrophe/allocs.B1", "a");
-    //if (ctx.B1.using_auto_storage ())
-    //    fputs("auto\n", f);
-    //else
-    //    fputs("alloc\n", f);
-    //fclose (f);
-
-    //f = fopen ("/home/lycantrophe/allocs.B2", "a");
-    //if (ctx.B2.using_auto_storage ())
-    //    fputs("auto\n", f);
-    //else
-    //    fputs("alloc\n", f);
-    //fclose (f);
-
     return this->length ();
 }
 
