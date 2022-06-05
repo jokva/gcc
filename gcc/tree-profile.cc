@@ -81,6 +81,9 @@ static GTY(()) tree ic_tuple_callee_field;
 namespace
 {
 
+/* Compare two basic blocks by their order in the expression i.e. for (a || b)
+   then cmp_index_map (a, b, ...) < 0.  The result is undefined if lhs, rhs
+   belong to different expressions. */
 int
 cmp_index_map (const void *lhs, const void *rhs, void *index_map)
 {
@@ -92,29 +95,34 @@ cmp_index_map (const void *lhs, const void *rhs, void *index_map)
 
 struct conds_ctx
 {
-    /* Output arrays allocated by the caller.  */
-    auto_vec<basic_block, 32> blocks;
+    /* This is both a reusable shared allocation which is also used to return
+       single expressions, which means it for most code should only hold a
+       couple of elements (the number of terms plus the two outcomes). */
+    auto_vec<basic_block, 16> blocks;
 
     /* Bitmap of the processed blocks.  Bit n set means basic_block->index has
        been processed either explicitly or as a part of an expression. */
     auto_sbitmap marks;
 
-    /* Pre-allocate bitmaps for per-function book keeping.  This is pure
-       instance reuse and the bitmaps carry no data between function calls. */
+    /* Map from basic_block->index to an ordering so that for a single
+       expression (a || b && c) => index_map[a] < index_map[b] < index_map[c].
+       The values do not have to be consecutive and can be interleaved by
+       values from other expressions, so comparisons only make sense for blocks
+       that belong to the same expression. */
+    auto_vec<int, 16> index_map;
+
+    /* Pre-allocate bitmaps and vectors for per-function book keeping.  This is
+       pure instance reuse and the bitmaps carry no data between function
+       calls. */
     auto_sbitmap G1;
     auto_sbitmap G2;
     auto_sbitmap G3;
-    auto_vec<int, 16> index_map;
-
-    /* Pre-allocate buffers for per-function book keeping.  This is pure
-       instance reuse and the vectors carry no data between function calls. */
-    auto_vec<basic_block, 16> B1;
+    auto_vec<basic_block, 32> B1;
     auto_vec<basic_block, 16> B2;
 
-    explicit conds_ctx (unsigned size) noexcept (true) :
-    marks (size), G1 (size), G2 (size), G3 (size)
+    explicit conds_ctx (unsigned size) noexcept (true) : marks (size),
+    G1 (size), G2 (size), G3 (size)
     {
-	blocks.reserve (size * 3);
 	bitmap_clear (marks);
     }
 
@@ -126,12 +134,15 @@ struct conds_ctx
 	bitmap_set_bit (marks, b->index);
     }
 
+    /* Mark nodes as processed so they are not processed twice. */
     void mark (const vec<basic_block>& bs) noexcept (true)
     {
 	for (const basic_block b : bs)
 	    mark (b);
     }
 
+    /* Check if all nodes are marked.  A successful run should visit & mark
+       every reachable node exactly once. */
     bool all_marked (const vec<basic_block>& reachable) const noexcept (true)
     {
 	for (const basic_block b : reachable)
@@ -352,7 +363,8 @@ scan_up (sbitmap ancestors, basic_block pre, basic_block post, const sbitmap G)
 
 /* A simple struct for storing/returning outcome block pairs.  Either both
    blocks are set or both are NULL. */
-struct outcomes {
+struct outcomes
+{
     basic_block t = NULL;
     basic_block f = NULL;
 
@@ -660,9 +672,9 @@ make_index_map_visit (basic_block b, vec<basic_block>& L, vec<int>& marks)
    For the expression (a || (b && c) || d) the blocks should be [a b c d]. */
 void
 make_index_map (const vec<basic_block>& blocks, int max_index,
-		vec<int>& index_map)
+		vec<basic_block>& L, vec<int>& index_map)
 {
-    auto_vec<basic_block, 32> L;
+    L.truncate (0);
     L.reserve (max_index);
 
     /* Use of the output map as a temporary for tracking visited status. */
@@ -854,7 +866,7 @@ condition_coverage::find_conditions (struct function *fn)
     const basic_block exit = ENTRY_BLOCK_PTR_FOR_FN (fn);
     int n = dfs_enumerate_from (entry, 0, yes, dfs.address (), nblocks, exit);
     dfs.truncate (n);
-    make_index_map (dfs, nblocks, ctx.index_map);
+    make_index_map (dfs, nblocks, ctx.B1, ctx.index_map);
 
     /* Visit all reachable nodes and collect conditions.  DFS order is
        important so the first node of a boolean expression is visited first
