@@ -405,8 +405,8 @@ condition_index (unsigned flag)
 
    Masking and short circuiting are deeply connected - masking occurs when
    control flow reaches a state that is also reachable with short circuiting.
-   In fact, masking appears as short circuiting in the reversed expression.
-   This means we can find the limits, the last term in preceeding
+   In fact, masking corresponds to short circuiting in the CFG for the reversed
+   expression.  This means we can find the limits, the last term in preceeding
    subexpressions, by following the edges that short circuit to the same
    outcome.
 
@@ -419,13 +419,12 @@ condition_index (unsigned flag)
    T   F
 
    T has has multiple incoming edges and is the outcome of a short circuit,
-   with top = a, bot = b.  lim = a.succs[0] = b, which has 1 ancestor a and so
-   the masking vector is b[1] = {a}.
+   with top = a, bot = b.  The top node (a)is masked when the edge (b, T) is
+   taken.
 
-   The names "top" and "bot" refers to a pair of nodes with a shared
+   The names "top" and "bot" refer to a pair of nodes with a shared
    destination. The top is always the node corresponding to the left-most
-   operand of the two, it holds that index_map[top] < index_map[bot], and the
-   top is the right-most term in its subexpression.
+   operand of the two it holds that index_map[top] < index_map[bot].
 
    Now consider (a && b) || (c && d) and its masking vectors:
 
@@ -448,19 +447,24 @@ condition_index (unsigned flag)
    d[0] = {c}
    d[1] = {a,b}
 
+   Note that 0 and 1 are indices and not boolean values - a[0] is the index in
+   the masking vector when a takes the true edge.
+
    b[0] and d[0] are identical to the a || b example, and d[1] is the bot in
-   the triangle [d, b] -> T.  b is the top node and last term in (a && b).  To
-   find the other individual terms masked we use the fact that all nodes in a
-   subexpression have outgoing edges to either the outcome or some other node
-   in the expression.  We know one outcome is T and that b is the last term,
-   which means the other outcome is b's other successor (in this case c).  From
-   this we find the terms by walking the predecessors starting at top (in this
-   case b) and adding nodes when both successors are present in the output.
+   the triangle [d, b] -> T.  b is the top node in the [d, b] relationship and
+   last term in (a && b).  To find the other terms masked we use the fact that
+   all nodes in an expression have outgoing edges to either the outcome or some
+   other node in the expression.  We know one outcome is T and that b is the
+   last term, which means the other outcome is b's other successor (in this
+   case c).  We find the terms by marking the outcomes (in this case c, T) and
+   walk the predecessors starting at top (in this case b) and masking nodes
+   when both successors are marked.
 
    The masking vector is represented as two bitfields per term in the
-   expression.  The expression a || b && c becomes the term vector [a b c] and
-   the bitsets are masks = [a.true a.false b.true ...].  The kth bit is set if
-   the the kth term is masked by the node-outcome. */
+   expression with the index corresponding to the term in the source
+   expression.  a || b && c becomes the term vector [a b c] and the masking
+   vectors [a[0] a[1] b[0] ...].  The kth bit of a masking vector is set if the
+   the kth term is masked by taking the edge. */
 void
 masking_vectors (conds_ctx& ctx, array_slice<basic_block> blocks,
 		 array_slice<gcov_type_unsigned> masks)
