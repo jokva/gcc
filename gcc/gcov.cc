@@ -964,7 +964,7 @@ print_usage (int error_p)
   fnotice (file, "  -b, --branch-probabilities      Include branch probabilities in output\n");
   fnotice (file, "  -c, --branch-counts             Output counts of branches taken\n\
                                     rather than percentages\n");
-  fnotice (file, "  -g, --conditions                Include condition coverage in output (MC/DC)\n");
+  fnotice (file, "  -g, --conditions                Include condition/decision coverage in output\n");
   fnotice (file, "  -d, --display-progress          Display progress information\n");
   fnotice (file, "  -D, --debug			    Display debugging dumps\n");
   fnotice (file, "  -f, --function-summaries        Output summaries for each function\n");
@@ -2663,12 +2663,12 @@ file_summary (const coverage_info *coverage)
   if (flag_conditions)
     {
       if (coverage->conditions)
-	fnotice (stdout, "Conditions covered:%s of %d\n",
+	fnotice (stdout, "Decisions covered:%s of %d\n",
 		 format_gcov (coverage->conditions_covered,
 			      coverage->conditions, 2),
 		 coverage->conditions);
       else
-	fnotice (stdout, "No conditions\n");
+	fnotice (stdout, "No decisions\n");
     }
 }
 
@@ -3013,7 +3013,7 @@ output_conditions (FILE *gcov_file, const block_info *binfo)
     const int expected = 2 * info.n_terms;
     const int got = info.popcount ();
 
-    fnotice (gcov_file, "conditions covered %d/%d\n", got, expected);
+    fnotice (gcov_file, "decisions covered %d/%d\n", got, expected);
     if (expected == got)
 	return;
 
@@ -3021,10 +3021,12 @@ output_conditions (FILE *gcov_file, const block_info *binfo)
     {
 	gcov_type_unsigned index = 1;
 	index <<= i;
-	if (!(index & info.truev))
-	    fnotice (gcov_file, "condition %2u not covered (true)\n", i);
-	if (!(index & info.falsev))
-	    fnotice (gcov_file, "condition %2u not covered (false)\n", i);
+	if ((index & info.truev & info.falsev))
+	    continue;
+
+	const char *t = (index & info.truev) ? "" : "true";
+	const char *f = (index & info.falsev) ? "" : " false";
+	fnotice (gcov_file, "condition %2u not covered (%s%s)\n", i, t, f);
     }
 }
 
