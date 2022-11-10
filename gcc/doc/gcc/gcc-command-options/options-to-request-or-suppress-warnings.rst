@@ -466,6 +466,12 @@ warnings, in some cases it may also cause false positives.
   warning or :option:`-Wno-error=coverage-invalid-line-number` can be used to
   disable the error.
 
+.. option:: -Wno-coverage-too-many-conditions
+
+  Warn in case a condition have too many terms and GCC gives up coverage.
+  Coverage is given up when there are more terms in the conditional than there
+  are bits in a ``gcov_type_unsigned``.  This warning is enabled by default.
+
 .. option:: -Wcoverage-invalid-line-number
 
   Default setting; overrides :option:`-Wno-coverage-invalid-line-number`.

@@ -58,6 +58,8 @@ along with GCC; see the file COPYING3.  If not see
 #include "alloc-pool.h"
 #include "symbol-summary.h"
 #include "symtab-thunks.h"
+#include "cfganal.h"
+#include "cfgloop.h"
 
 static GTY(()) tree gcov_type_node;
 static GTY(()) tree tree_interval_profiler_fn;
@@ -72,6 +74,1046 @@ static GTY(()) tree tree_time_profiler_counter;
 static GTY(()) tree ic_tuple_var;
 static GTY(()) tree ic_tuple_counters_field;
 static GTY(()) tree ic_tuple_callee_field;
+
+namespace
+{
+/* Some context and reused instances between function calls.  Large embedded
+   buffers are used to up-front request enough memory for most programs and
+   merge them into a single allocation at the cost of using more memory in the
+   average case.  Some numbers from linux v5.13 which is assumed to be a
+   reasonably diverse code base: 75% of the functions in linux have less than
+   16 nodes in the CFG and approx 2.5% have more than 64 nodes.  The functions
+   that go beyond a few dozen nodes tend to be very large (>100) and so 64
+   seems like a good balance.
+
+   This is really just a performance balance of the cost of allocation and
+   wasted memory.  */
+struct conds_ctx
+{
+    /* Bitmap of the processed blocks.  Bit n set means basic_block->index has
+       been processed either explicitly or as a part of an expression.  */
+    auto_sbitmap marks;
+
+    /* This is both a reusable shared allocation which is also used to return
+       single expressions, which means it for most code should only hold a
+       couple of elements.  */
+    auto_vec<basic_block, 32> blocks;
+
+    /* Map from basic_block->index to an ordering so that for a single
+       expression (a || b && c) => index_map[a] < index_map[b] < index_map[c].
+       The values do not have to be consecutive and can be interleaved by
+       values from other expressions, so comparisons only make sense for blocks
+       that belong to the same expression.  */
+    auto_vec<int, 64> index_map;
+
+    /* Pre-allocate bitmaps and vectors for per-function book keeping.  This is
+       pure instance reuse and the bitmaps carry no data between function
+       calls.  */
+    auto_vec<basic_block, 64> B1;
+    auto_vec<basic_block, 64> B2;
+    auto_sbitmap G1;
+    auto_sbitmap G2;
+    auto_sbitmap G3;
+
+    explicit conds_ctx (unsigned size) noexcept (true) : marks (size),
+    G1 (size), G2 (size), G3 (size)
+    {
+	bitmap_clear (marks);
+    }
+
+    /* Mark a node as processed so nodes are not processed twice for example in
+       loops, gotos.  */
+    void mark (const basic_block b) noexcept (true)
+    {
+	gcc_assert (!bitmap_bit_p (marks, b->index));
+	bitmap_set_bit (marks, b->index);
+    }
+
+    /* Mark nodes as processed so they are not processed twice.  */
+    void mark (const vec<basic_block>& bs) noexcept (true)
+    {
+	for (const basic_block b : bs)
+	    mark (b);
+    }
+
+    /* Check if all nodes are marked.  A successful run should visit & mark
+       every reachable node exactly once.  */
+    bool all_marked (const vec<basic_block>& reachable) const noexcept (true)
+    {
+	for (const basic_block b : reachable)
+	    if (!bitmap_bit_p (marks, b->index))
+		return false;
+	return true;
+    }
+};
+
+/* Only instrument terms with fewer than number of bits in a (wide) gcov
+   integer, which is probably 64.  The algorithm itself does not impose this
+   limitation, but it makes for a simpler implementation.
+
+   * Allocating the output data structure (coverage_counter_alloc ()) can
+     assume pairs of gcov_type_unsigned and not use a separate length field.
+   * A pair gcov_type_unsigned can be used as accumulators.
+   * Updating accumulators is can use the bitwise operations |=, &= and not
+     custom operators that work for arbitrary-sized bit-sets.
+
+   Most real-world code should be unaffected by this, but it is possible
+   (especially for generated code) to exceed this limit.  */
+#define CONDITIONS_MAX_TERMS (sizeof (gcov_type_unsigned) * BITS_PER_UNIT)
+#define EDGE_CONDITION (EDGE_TRUE_VALUE | EDGE_FALSE_VALUE)
+
+/* Compare two basic blocks by their order in the expression i.e. for (a || b)
+   then cmp_index_map (a, b, ...) < 0.  The result is undefined if lhs, rhs
+   belong to different expressions.  */
+int
+cmp_index_map (const void *lhs, const void *rhs, void *index_map)
+{
+    const_basic_block l = *(const basic_block*) lhs;
+    const_basic_block r = *(const basic_block*) rhs;
+    const vec<int>* im = (const vec<int>*) index_map;
+    return (*im)[l->index] - (*im)[r->index];
+}
+
+/* Find the index of needle in blocks; return -1 if not found.  This has two
+   uses, sometimes for the index and sometimes for set member c hecks.  Sets are
+   typically very small (number of conditions, >8 is uncommon) so linear search
+   should be very fast.  */
+int
+index_of (const basic_block needle, array_slice<basic_block> blocks)
+{
+    for (size_t i = 0; i < blocks.size (); i++)
+	if (blocks[i] == needle)
+	    return int (i);
+    return -1;
+}
+
+/* Returns true if this is a conditional node, i.e. it has outgoing true and
+   false edges.  */
+bool
+block_conditional_p (const basic_block b)
+{
+    unsigned t = 0;
+    unsigned f = 0;
+    for (edge e : b->succs)
+    {
+	t |= (e->flags & EDGE_TRUE_VALUE);
+	f |= (e->flags & EDGE_FALSE_VALUE);
+    }
+    return t && f;
+}
+
+/* Check if the edge is a conditional.  */
+bool
+edge_conditional_p (const edge e)
+{
+    return e->flags & EDGE_CONDITION;
+}
+
+/* Special cases of the single_*_p and single_*_edge functions in basic-block.h
+   that don't consider exception handling or other complex edges.  This helps
+   create a view of the CFG with only normal edges - if a basic block has both
+   an outgoing fallthrough and exceptional edge [1], it should be considered a
+   single-successor.
+
+   [1] if this is not possible, these functions can be removed and replaced by
+       their basic-block.h cousins.  */
+bool
+single (const vec<edge, va_gc> *edges)
+{
+    int n = EDGE_COUNT (edges);
+    if (n == 0)
+	return false;
+
+    for (edge e : edges)
+	if (e->flags & EDGE_COMPLEX)
+	    n -= 1;
+
+    return n == 1;
+}
+
+/* Get the single, non-complex edge.  Behavior is undefined edges have more
+   than 1 non-complex edges.  */
+edge
+single_edge (const vec<edge, va_gc> *edges)
+{
+    for (edge e : edges)
+    {
+	if (e->flags & EDGE_COMPLEX)
+	    continue;
+	return e;
+    }
+    return NULL;
+}
+
+/* Sometimes, for example with function calls and C++ destructors, the CFG gets
+   extra nodes that are essentially single-entry-single-exit in the middle of
+   boolean expressions.  For example:
+
+      x || can_throw (y)
+
+               A
+              /|
+             / |
+            B  |
+            |  |
+            C  |
+           / \ |
+          /   \|
+         F     T
+
+   Without the extra node inserted by the function + exception it becomes a
+   proper 2-term graph, not 2 single-term graphs.
+
+               A
+              /|
+             C |
+            / \|
+           F   T
+
+   contract_edge ignores the series of intermediate nodes and makes a virtual
+   edge A -> C without having to construct a new simplified CFG explicitly.  It
+   gets more complicated as non-conditional edges is how the body of the
+   then/else blocks are separated from the boolean expression, so only edges
+   that are inserted because of function calls in the expression itself must be
+   merged.
+
+   Only chains of single-exit single-entry nodes that end with a condition
+   should be contracted.  */
+edge
+contract_edge (edge e)
+{
+    edge source = e;
+    while (true)
+    {
+	basic_block dest = e->dest;
+	if (!single (dest->preds))
+	    return source;
+	if (e->flags & EDGE_DFS_BACK)
+	    return source;
+	if (block_conditional_p (dest))
+	    return e;
+
+	e = single_edge (dest->succs);
+	if (!e)
+	    return source;
+    }
+}
+
+/* This is the predecessor dual of contract_edge; it collapses the predecessor
+   blocks between two operands in a boolean expression.  */
+edge
+contract_edge_up (edge e)
+{
+    while (true)
+    {
+	basic_block src = e->src;
+	if (edge_conditional_p (e))
+	    return e;
+	if (!single (src->preds))
+	    return e;
+	e = single_edge (src->preds);
+    }
+}
+
+/* "Undo" an edge split.  Sometimes the sink of a boolean expression will be
+   split into multiple blocks to accurately track line coverage, for example
+   when there is a goto-label at the top of the then/else block:
+
+    if (a && b)
+    {
+	l1:
+	...
+    }
+    else
+    {
+	l2:
+	...
+    }
+
+    and the corresponding CFG where a1 and b1 are created in edge splits to the
+    same destination (F):
+
+    a
+    |\
+    | a1
+    b  \
+    |\  |
+    | b1|
+    |  \|
+    T   F
+
+    This function recognizes this shape and returns the "merges" the split
+    outcome block by returning their common successor.  In all other cases it is
+    the identity function.  */
+basic_block
+merge_split_outcome (basic_block b)
+{
+    if (!single (b->succs))
+	return b;
+    if (!single (b->preds))
+	return b;
+
+    const unsigned flag = single_edge (b->preds)->flags & EDGE_CONDITION;
+    if (!flag)
+	return b;
+
+    edge e = single_edge (b->succs);
+    for (edge pred : e->dest->preds)
+    {
+	if (!single (pred->src->preds))
+	    return b;
+	if (!(single_edge (pred->src->preds)->flags & flag))
+	    return b;
+    }
+    return e->dest;
+}
+
+
+/* Find the set {ancestors (p) intersect G} where ancestors is the recursive
+   set of predecessors for p.  Limiting to the ancestors that are also in G
+   (see cond_reachable_from) and by q is an optimization as ancestors outside G
+   have no effect when isolating expressions.
+
+   dfs_enumerate_from () does not work as the filter function needs edge
+   information and dfs_enumerate_from () only considers blocks.  */
+void
+ancestors_of (basic_block p, basic_block q, const sbitmap G, sbitmap ancestors)
+{
+    if (!bitmap_bit_p (G, p->index))
+	return;
+
+    bitmap_set_bit (ancestors, p->index);
+    bitmap_set_bit (ancestors, q->index);
+    if (p == q)
+	return;
+
+    auto_vec<basic_block, 16> stack;
+    stack.safe_push (p);
+
+    while (!stack.is_empty ())
+    {
+	basic_block b = stack.pop ();
+	if (single (b->preds))
+	{
+	    edge e = single_edge (b->preds);
+	    e = contract_edge_up (e);
+	    b = e->dest;
+	}
+
+	for (edge e : b->preds)
+	{
+	    basic_block src = e->src;
+	    if (bitmap_bit_p (ancestors, e->src->index))
+		continue;
+	    if (!bitmap_bit_p (G, e->src->index))
+		continue;
+	    bitmap_set_bit (ancestors, src->index);
+	    stack.safe_push (src);
+	}
+    }
+}
+
+/* A simple struct for storing/returning outcome block pairs.  Either both
+   blocks are set or both are NULL.  */
+struct outcomes
+{
+    basic_block t = NULL;
+    basic_block f = NULL;
+
+    operator bool () const noexcept (true)
+    {
+	return t && f;
+    }
+};
+
+/* Get the true/false successors of a basic block.  If b is not a conditional
+   block both edges are NULL.  */
+outcomes
+conditional_succs (const basic_block b)
+{
+    outcomes c;
+    for (edge e : b->succs)
+    {
+	if (e->flags & EDGE_TRUE_VALUE)
+	    c.t = merge_split_outcome (e->dest);
+	if (e->flags & EDGE_FALSE_VALUE)
+	    c.f = merge_split_outcome (e->dest);
+    }
+
+    gcc_assert ((c.t && c.f) || (!c.t && !c.f));
+    return c;
+}
+
+/* Get the index or offset of a conditional flag, 0 for true and 1 for false.
+   These indices carry no semantics but must be consistent as they are used to
+   index into data structures in code generation and gcov.  */
+unsigned
+condition_index (unsigned flag)
+{
+    return (flag & EDGE_CONDITION) == EDGE_TRUE_VALUE ? 0 : 1;
+}
+
+/* Compute the masking vector.
+
+   Masking and short circuiting are deeply connected - masking occurs when
+   control flow reaches a state that is also reachable with short circuiting.
+   In fact, masking corresponds to short circuiting in the CFG for the reversed
+   expression.  This means we can find the limits, the last term in preceeding
+   subexpressions, by following the edges that short circuit to the same
+   outcome.
+
+   In the simplest case a || b:
+
+   a
+   |\
+   | b
+   |/ \
+   T   F
+
+   T has has multiple incoming edges and is the outcome of a short circuit,
+   with top = a, bot = b.  The top node (a) is masked when the edge (b, T) is
+   taken.
+
+   The names "top" and "bot" refer to a pair of nodes with a shared
+   destination.  The top is always the node corresponding to the left-most
+   operand of the two it holds that index_map[top] < index_map[bot].
+
+   Now consider (a && b) || (c && d) and its masking vectors:
+
+   a
+   |\
+   b \
+   |\|
+   | c
+   | |\
+   | d \
+   |/ \|
+   T   F
+
+   a[0] = {}
+   a[1] = {}
+   b[0] = {a}
+   b[1] = {}
+   c[0] = {}
+   c[1] = {}
+   d[0] = {c}
+   d[1] = {a,b}
+
+   Note that 0 and 1 are indices and not boolean values - a[0] is the index in
+   the masking vector when a takes the true edge.
+
+   b[0] and d[0] are identical to the a || b example, and d[1] is the bot in
+   the triangle [d, b] -> T.  b is the top node in the [d, b] relationship and
+   last term in (a && b).  To find the other terms masked we use the fact that
+   all nodes in an expression have outgoing edges to either the outcome or some
+   other node in the expression.  The "bot" node is also the last term in a
+   masked subexpression, so the problem becomes finding the subgraph where all
+   paths end up in the successors to bot.
+
+   We find the terms by marking the outcomes (in this case c, T) and walk the
+   predecessors starting at top (in this case b) and masking nodes when both
+   successors are marked.
+
+   The masking vector is represented as two bitfields per term in the
+   expression with the index corresponding to the term in the source
+   expression.  a || b && c becomes the term vector [a b c] and the masking
+   vectors [a[0] a[1] b[0] ...].  The kth bit of a masking vector is set if the
+   the kth term is masked by taking the edge.  */
+void
+masking_vectors (conds_ctx& ctx, array_slice<basic_block> blocks,
+		 array_slice<gcov_type_unsigned> masks)
+{
+    gcc_assert (blocks.is_valid ());
+    gcc_assert (!blocks.empty ());
+    gcc_assert (masks.is_valid ());
+
+    sbitmap marks = ctx.G1;
+    sbitmap expr = ctx.G2;
+    vec<basic_block>& queue = ctx.B1;
+    vec<basic_block>& body = ctx.B2;
+    const vec<int>& index_map = ctx.index_map;
+    bitmap_clear (expr);
+
+    for (const basic_block b : blocks)
+	bitmap_set_bit (expr, b->index);
+
+    /* Set up for the iteration - include two outcome nodes in the traversal and
+       ignore the leading term since it cannot mask anything.  The algorithm is
+       not sensitive to the traversal order.  */
+    body.truncate (0);
+    body.reserve (blocks.size () + 2);
+    for (const basic_block b : blocks)
+	body.quick_push (b);
+
+    outcomes out = conditional_succs (blocks.back ());
+    body.quick_push (out.t);
+    body.quick_push (out.f);
+    body[0] = body.pop ();
+
+    for (const basic_block b : body)
+    {
+	for (edge e1 : b->preds)
+	for (edge e2 : b->preds)
+	{
+	    const basic_block top = e1->src;
+	    const basic_block bot = e2->src;
+	    const unsigned cond = e1->flags & e2->flags & (EDGE_CONDITION);
+
+	    if (!cond)
+		continue;
+	    if (e1 == e2)
+		continue;
+	    if (!bitmap_bit_p (expr, top->index))
+		continue;
+	    if (!bitmap_bit_p (expr, bot->index))
+		continue;
+	    if (index_map[top->index] > index_map[bot->index])
+		continue;
+
+	    outcomes out = conditional_succs (top);
+	    gcc_assert (out);
+	    bitmap_clear (marks);
+	    bitmap_set_bit (marks, out.t->index);
+	    bitmap_set_bit (marks, out.f->index);
+	    queue.truncate (0);
+	    queue.safe_push (top);
+
+	    // The edge bot -> outcome triggers the masking
+	    const int m = 2*index_of (bot, blocks) + condition_index (cond);
+	    while (!queue.is_empty ())
+	    {
+		basic_block q = queue.pop ();
+		/* q may have been processed & completed by being added to the
+		   queue multiple times, so check that there is still work to
+		   do before continuing.  */
+		if (bitmap_bit_p (marks, q->index))
+		    continue;
+
+		outcomes succs = conditional_succs (q);
+		if (!bitmap_bit_p (marks, succs.t->index))
+		    continue;
+		if (!bitmap_bit_p (marks, succs.f->index))
+		    continue;
+
+		const int index = index_of (q, blocks);
+		gcc_assert (index != -1);
+		masks[m] |= gcov_type_unsigned (1) << index;
+		bitmap_set_bit (marks, q->index);
+
+		for (edge e : q->preds)
+		{
+		    e = contract_edge_up (e);
+		    if (!edge_conditional_p (e))
+			continue;
+		    if (e->flags & EDGE_DFS_BACK)
+			continue;
+		    if (bitmap_bit_p (marks, e->src->index))
+			continue;
+		    if (!bitmap_bit_p (expr, e->src->index))
+			continue;
+		    queue.safe_push (e->src);
+		}
+	    }
+	}
+    }
+}
+
+/* Find the nodes reachable from p by following only (possibly contracted)
+   condition edges dominated by p and ignore DFS back edges.  From a high level
+   this is partitioning the CFG into subgraphs by removing all non-condition
+   edges and selecting a single connected subgraph.  This creates a cut C = (G,
+   G') where G is the returned explicitly by this function.
+
+   It is assumed that all paths from p go through q (q post-dominates p).  p
+   must always be the first term in an expression and a condition node.
+
+   If |G| = 1 then this is a single term expression.  If |G| > 1 then either
+   this is a multi-term expression or the first block in the then/else block is
+   a conditional expression as well.
+
+   Only nodes dominated by p is added - under optimization some blocks may be
+   merged and multiple independent conditions may share the same outcome
+   (making successors misidentified as a right operands), but true right-hand
+   operands are always dominated by the first term.
+
+   The function outputs both a bitmap and a vector as both are useful to the
+   caller.  */
+void
+cond_reachable_from (basic_block p, basic_block q, sbitmap expr,
+		     vec<basic_block>& out)
+{
+    out.safe_push (p);
+    bitmap_set_bit (expr, p->index);
+    for (unsigned pos = 0; pos < out.length (); pos++)
+    {
+	for (edge e : out[pos]->succs)
+	{
+	    basic_block dest = contract_edge (e)->dest;
+	    if (dest == q)
+		continue;
+	    if (!dominated_by_p (CDI_DOMINATORS, dest, p))
+		continue;
+	    if (!block_conditional_p (dest))
+		continue;
+	    if (bitmap_bit_p (expr, dest->index))
+		continue;
+	    if (e->flags & EDGE_DFS_BACK)
+		continue;
+
+	    bitmap_set_bit (expr, dest->index);
+	    out.safe_push (dest);
+	}
+    }
+}
+
+/* Find the neighborhood of the graph G = [blocks, blocks+n), the
+   successors of nodes in G that are not also in G.  In the cut C = (G, G')
+   these are the nodes in G' with incoming edges that cross the span.  */
+void
+neighborhood (const vec<basic_block>& blocks, sbitmap G, vec<basic_block>& out)
+{
+    for (const basic_block b : blocks)
+    {
+	for (edge e : b->succs)
+	{
+	    basic_block dest = contract_edge (e)->dest;
+	    if (bitmap_bit_p (G, dest->index))
+		continue;
+	    if (!out.contains (dest))
+		out.safe_push (dest);
+	}
+    }
+
+    /* Fix the neighborhood by correcting edge splits to the outcome nodes.  */
+    for (unsigned i = 0; i != out.length (); i++)
+    {
+	basic_block prev = out[i];
+	basic_block next = merge_split_outcome (prev);
+	if (next->index != prev->index)
+	{
+	    bitmap_set_bit (G, prev->index);
+	    out[i] = next;
+	}
+    }
+}
+
+/* Find and isolate the expression starting at p.
+
+   Make a cut C = (G, G') following only condition edges.  G is a superset of
+   the expression B, but the walk may include expressions from the then/else
+   blocks if they start with conditions.  Only the subgraph B is the ancestor
+   of *both* the then/else outcome, which means B is the intersection of the
+   ancestors of the nodes in the neighborhood N(G).  */
+void
+isolate_expression (conds_ctx &ctx, basic_block p, vec<basic_block>& out)
+{
+    sbitmap expr = ctx.G1;
+    sbitmap reachable = ctx.G2;
+    sbitmap ancestors = ctx.G3;
+    bitmap_clear (expr);
+    bitmap_clear (reachable);
+
+    vec<basic_block>& G = ctx.B1;
+    vec<basic_block>& NG = ctx.B2;
+    G.truncate (0);
+    NG.truncate (0);
+
+    basic_block post = get_immediate_dominator (CDI_POST_DOMINATORS, p);
+    cond_reachable_from (p, post, reachable, G);
+    if (G.length () == 1)
+    {
+	out.safe_push (p);
+	return;
+    }
+
+    neighborhood (G, reachable, NG);
+    bitmap_copy (expr, reachable);
+
+    for (const basic_block neighbor : NG)
+    {
+	bitmap_clear (ancestors);
+	for (edge e : neighbor->preds)
+	    ancestors_of (e->src, p, reachable, ancestors);
+	bitmap_and (expr, expr, ancestors);
+    }
+
+    for (const basic_block b : G)
+	if (bitmap_bit_p (expr, b->index))
+	    out.safe_push (b);
+    out.sort (cmp_index_map, &ctx.index_map);
+}
+
+/* Emit lhs = op1 <op> op2 on edges.  This emits non-atomic instructions and
+   should only be used on the local accumulators.  */
+void
+emit_bitwise_op (edge e, tree lhs, tree op1, tree_code op, tree op2)
+{
+    tree tmp;
+    gassign *read;
+    gassign *bitw;
+    gimple *write;
+
+    tmp = make_temp_ssa_name (gcov_type_node, NULL, "__conditions_tmp");
+    read = gimple_build_assign (tmp, op1);
+    tmp = make_temp_ssa_name (gcov_type_node, NULL, "__conditions_tmp");
+    bitw = gimple_build_assign (tmp, op, gimple_assign_lhs (read), op2);
+    write = gimple_build_assign (lhs, gimple_assign_lhs (bitw));
+
+    gsi_insert_on_edge (e, read);
+    gsi_insert_on_edge (e, bitw);
+    gsi_insert_on_edge (e, write);
+}
+
+/* Visitor for make_index_map.  */
+void
+make_index_map_visit (basic_block b, vec<basic_block>& L, vec<int>& marks)
+{
+    if (marks[b->index])
+	return;
+
+    for (edge e : b->succs)
+	if (!(e->flags & EDGE_DFS_BACK))
+	    make_index_map_visit (e->dest, L, marks);
+
+    marks[b->index] = 1;
+    L.quick_push (b);
+}
+
+/* Find a topological sorting of the blocks in a function so that left operands
+   are before right operands including subexpressions.  Sorting on block index
+   does not guarantee this property and the syntactical order of terms is very
+   important to the condition coverage.  The sorting algorithm is from Cormen
+   et al (2001) but with back-edges ignored and thus there is no need for
+   temporary marks (for cycle detection).
+
+   It is important to select unvisited nodes in DFS order to ensure the
+   roots/leading terms of boolean expressions are visited first (the other
+   terms being covered by the recursive step), but the visiting order of
+   individual boolean expressions carries no significance.
+
+   For the expression (a || (b && c) || d) the blocks should be [a b c d].  */
+void
+make_index_map (const vec<basic_block>& blocks, int max_index,
+		vec<basic_block>& L, vec<int>& index_map)
+{
+    L.truncate (0);
+    L.reserve (max_index);
+
+    /* Use of the output map as a temporary for tracking visited status.  */
+    index_map.truncate (0);
+    index_map.safe_grow_cleared (max_index);
+    for (const basic_block b : blocks)
+	make_index_map_visit (b, L, index_map);
+
+    /* Insert canaries - if there are unreachable nodes (for example infinite
+       loops) then the unreachable nodes should never be needed for comparison,
+       and L.length () < max_index.  An index mapping should also never be
+       recorded twice.  */
+    for (unsigned i = 0; i < index_map.length (); i++)
+	index_map[i] = -1;
+
+    gcc_assert (blocks.length () == L.length ());
+    L.reverse ();
+    const unsigned nblocks = L.length ();
+    for (unsigned i = 0; i < nblocks; i++)
+    {
+	gcc_assert (L[i]->index != -1);
+	index_map[L[i]->index] = int (i);
+    }
+}
+
+/* Walk the CFG and collect conditionals.
+
+   1.  Collect a candidate set G by walking from the root following all
+       (contracted) condition edges.
+   2.  This creates a cut C = (G, G'); find the neighborhood N(G).
+   3.  For every node in N(G), follow the edges across the cut and collect all
+       ancestors (that are also in G).
+   4.  The intersection of all these ancestor sets is the boolean expression B
+       that starts in root.
+
+   Walking is not guaranteed to find nodes in the order of the expression, it
+   might find (a || b) && c as [a c b], so the result must be sorted by the
+   index map.  */
+const vec<basic_block>&
+collect_conditions (conds_ctx& ctx, const basic_block block)
+{
+    vec<basic_block>& blocks = ctx.blocks;
+    blocks.truncate (0);
+
+    if (bitmap_bit_p (ctx.marks, block->index))
+	return blocks;
+
+    if (!block_conditional_p (block))
+    {
+	ctx.mark (block);
+	return blocks;
+    }
+
+    isolate_expression (ctx, block, blocks);
+    ctx.mark (blocks);
+
+    if (blocks.length () > CONDITIONS_MAX_TERMS)
+    {
+	location_t loc = gimple_location (gsi_stmt (gsi_last_bb (block)));
+	warning_at (loc, OPT_Wcoverage_too_many_conditions,
+		    "Too many conditions (found %u); giving up coverage",
+		    blocks.length ());
+	blocks.truncate (0);
+    }
+    return blocks;
+}
+
+/* Used for dfs_enumerate_from () to include all reachable nodes.  */
+bool
+yes (const_basic_block, const void *)
+{
+    return true;
+}
+
+}
+
+struct condcov {
+    explicit condcov (unsigned nblocks) noexcept (true) : ctx (nblocks)
+    {}
+    auto_vec<int, 128> m_index;
+    auto_vec<basic_block, 256> m_blocks;
+    auto_vec<gcov_type_unsigned, 512> m_masks;
+    conds_ctx ctx;
+};
+
+unsigned
+cov_length (const struct condcov* cov)
+{
+    if (cov->m_index.is_empty ())
+	return 0;
+    return cov->m_index.length () - 1;
+}
+
+array_slice<basic_block>
+cov_blocks (struct condcov* cov, unsigned n)
+{
+    if (n >= cov->m_index.length ())
+	return array_slice<basic_block>::invalid ();
+
+    basic_block *begin = cov->m_blocks.begin () + cov->m_index[n];
+    basic_block *end = cov->m_blocks.begin () + cov->m_index[n + 1];
+    return array_slice<basic_block> (begin, end - begin);
+}
+
+array_slice<gcov_type_unsigned>
+cov_masks (struct condcov* cov, unsigned n)
+{
+    if (n >= cov->m_index.length ())
+	return array_slice<gcov_type_unsigned>::invalid ();
+
+    gcov_type_unsigned *begin = cov->m_masks.begin () + 2*cov->m_index[n];
+    gcov_type_unsigned *end = cov->m_masks.begin () + 2*cov->m_index[n + 1];
+    return array_slice<gcov_type_unsigned> (begin, end - begin);
+}
+
+void
+cov_free (struct condcov* cov)
+{
+    delete cov;
+}
+
+/* Condition coverage (MC/DC)
+
+   Algorithm
+   ---------
+   Whalen, Heimdahl, De Silva in "Efficient Test Coverage Measurement for
+   MC/DC" describe an algorithm for modified condition/decision coverage based
+   on AST analysis.  This algorithm analyses the control flow graph to analyze
+   expressions and compute masking vectors, but is inspired by their marking
+   functions for recording outcomes.  The individual phases are described in
+   more detail closer to the implementation.
+
+   The CFG is traversed in DFS order.  It is important that the first basic
+   block in an expression is the first one visited, but the order of
+   independent expressions does not matter.  When the function terminates,
+   every node in the dfs should have been processed and marked exactly once.
+   If there are unreachable nodes they are ignored and not instrumented.
+
+   The CFG is broken up into segments between dominators.  This isn't strictly
+   necessary, but since boolean expressions cannot cross dominators it makes
+   for a nice way to introduce limits to searches.
+
+   The coverage only considers the positions, not the symbols, in a
+   conditional, e.g. !A || (!B && A) is a 3-term conditional even though A
+   appears twice.  Subexpressions have no effect on term ordering:
+   (a && (b || (c && d)) || e) comes out as [a b c d e].
+
+   The output for gcov is a vector of pairs of unsigned integers, interpreted
+   as bit-sets, where the bit index corresponds to the index of the condition
+   in the expression.  */
+struct condcov*
+find_conditions (struct function *fn)
+{
+    record_loop_exits ();
+    mark_dfs_back_edges (fn);
+
+    const bool have_dom = dom_info_available_p (fn, CDI_DOMINATORS);
+    const bool have_post_dom = dom_info_available_p (fn, CDI_POST_DOMINATORS);
+    if (!have_dom)
+	calculate_dominance_info (CDI_DOMINATORS);
+    if (!have_post_dom)
+	calculate_dominance_info (CDI_POST_DOMINATORS);
+
+    const unsigned nblocks = n_basic_blocks_for_fn (fn);
+    condcov *cov = new condcov (nblocks);
+    conds_ctx& ctx = cov->ctx;
+
+    auto_vec<basic_block, 16> dfs;
+    dfs.safe_grow (nblocks);
+    const basic_block entry = ENTRY_BLOCK_PTR_FOR_FN (fn);
+    const basic_block exit = ENTRY_BLOCK_PTR_FOR_FN (fn);
+    int n = dfs_enumerate_from (entry, 0, yes, dfs.address (), nblocks, exit);
+    dfs.truncate (n);
+    make_index_map (dfs, nblocks, ctx.B1, ctx.index_map);
+
+    /* Visit all reachable nodes and collect conditions.  DFS order is
+       important so the first node of a boolean expression is visited first
+       (it will mark subsequent terms).  */
+    cov->m_index.safe_push (0);
+    for (const basic_block b : dfs)
+    {
+	const vec<basic_block>& expr = collect_conditions (ctx, b);
+	if (!expr.is_empty ())
+	{
+	    cov->m_blocks.safe_splice (expr);
+	    cov->m_index.safe_push (cov->m_blocks.length ());
+	}
+    }
+    gcc_assert (ctx.all_marked (dfs));
+
+    if (!have_dom)
+	free_dominance_info (fn, CDI_DOMINATORS);
+    if (!have_post_dom)
+	free_dominance_info (fn, CDI_POST_DOMINATORS);
+
+    cov->m_masks.safe_grow_cleared (2 * cov->m_index.last());
+    const unsigned length = cov_length (cov);
+    for (unsigned i = 0; i < length; i++)
+	masking_vectors (ctx, cov_blocks (cov, i), cov_masks (cov, i));
+
+    return cov;
+}
+
+int
+instrument_decisions (array_slice<basic_block> expr, unsigned condno,
+		      tree *accu, gcov_type_unsigned *masks)
+{
+    /* Zero the local accumulators.  */
+    tree zero = build_int_cst (get_gcov_type (), 0);
+    for (edge e : expr[0]->succs)
+    {
+	gsi_insert_on_edge (e, gimple_build_assign (accu[0], zero));
+	gsi_insert_on_edge (e, gimple_build_assign (accu[1], zero));
+    }
+    /* Add instructions for updating the function-local accumulators.  */
+    for (size_t i = 0; i < expr.size (); i++)
+    {
+	for (edge e : expr[i]->succs)
+	{
+	    if (!edge_conditional_p (e))
+		continue;
+
+	    /* accu |= expr[i] */
+	    const int k = condition_index (e->flags);
+	    tree rhs = build_int_cst (gcov_type_node, 1ULL << i);
+	    emit_bitwise_op (e, accu[k], accu[k], BIT_IOR_EXPR, rhs);
+
+	    if (masks[2*i + k] == 0)
+		continue;
+
+	    /* accu &= mask[i] */
+	    tree mask = build_int_cst (gcov_type_node, ~masks[2*i + k]);
+	    for (int j = 0; j < 2; j++)
+		emit_bitwise_op (e, accu[j], accu[j], BIT_AND_EXPR, mask);
+	}
+    }
+
+    const bool atomic = flag_profile_update == PROFILE_UPDATE_ATOMIC;
+    const tree atomic_ior = builtin_decl_explicit
+	(TYPE_PRECISION (gcov_type_node) > 32
+	 ? BUILT_IN_ATOMIC_FETCH_OR_8
+	 : BUILT_IN_ATOMIC_FETCH_OR_4);
+
+    /* Add instructions for flushing the local accumulators.
+
+       It is important that the flushes happen on on the outcome's incoming
+       edges, otherwise flushes could be lost to exception handling.
+
+       void fn (int a)
+       {
+	   if (a)
+	    fclose ();
+	   exit ();
+       }
+
+       Can yield the CFG:
+       A
+       |\
+       | B
+       |/
+       e
+
+       This typically only happen in optimized builds, but gives linker errors
+       because the counter is left as an undefined symbol.  */
+
+    outcomes out = conditional_succs (expr.back ());
+    const basic_block outcome_blocks[] = { out.t, out.t, out.f, out.f, };
+    const int outcome[] = { 0, 1, 0, 1 };
+    for (int i = 0; i < 4; i++)
+    {
+	const int k = outcome[i];
+	for (edge e : outcome_blocks[i]->preds)
+	{
+	    /* The outcome may have been split and we want to check if the
+	       edge is sourced from inside the expression, so contract it to
+	       find the source conditional edge.  */
+	    e = contract_edge_up (e);
+
+	    /* Only instrument edges from inside the expression.  Sometimes
+	       complicated control flow (like sigsetjmp and gotos) add
+	       predecessors that don't come from the boolean expression.  */
+	    if (index_of (e->src, expr) == -1)
+		continue;
+
+	    tree ref = tree_coverage_counter_ref (GCOV_COUNTER_CONDS,
+						  2*condno + k);
+	    tree tmp = make_temp_ssa_name (gcov_type_node, NULL,
+					   "__conditions_tmp");
+	    if (atomic)
+	    {
+		tree relaxed = build_int_cst (integer_type_node,
+					      MEMMODEL_RELAXED);
+		ref = unshare_expr (ref);
+		gassign *read = gimple_build_assign (tmp, accu[k]);
+		gcall *flush = gimple_build_call (atomic_ior, 3,
+						  build_addr (ref),
+						  gimple_assign_lhs (read),
+						  relaxed);
+
+		gsi_insert_on_edge (e, read);
+		gsi_insert_on_edge (e, flush);
+	    }
+	    else
+	    {
+		gassign *read = gimple_build_assign (tmp, ref);
+		tmp = gimple_assign_lhs (read);
+		gsi_insert_on_edge (e, read);
+		ref = unshare_expr (ref);
+		emit_bitwise_op (e, ref, accu[k], BIT_IOR_EXPR, tmp);
+	    }
+	}
+    }
+    return expr.size ();
+}
+
+#undef CONDITIONS_MAX_TERMS
+#undef EDGE_CONDITION
 
 /* Do initialization work for the edge profiler.  */
 
@@ -758,7 +1800,7 @@ tree_profiling (void)
 	  thunk = true;
 	  /* When generate profile, expand thunk to gimple so it can be
 	     instrumented same way as other functions.  */
-	  if (profile_arc_flag)
+	  if (profile_arc_flag || profile_condition_flag)
 	    expand_thunk (node, false, true);
 	  /* Read cgraph profile but keep function as thunk at profile-use
 	     time.  */
@@ -803,7 +1845,7 @@ tree_profiling (void)
   release_profile_file_filtering ();
 
   /* Drop pure/const flags from instrumented functions.  */
-  if (profile_arc_flag || flag_test_coverage)
+  if (profile_arc_flag || profile_condition_flag || flag_test_coverage)
     FOR_EACH_DEFINED_FUNCTION (node)
       {
 	if (!gimple_has_body_p (node->decl)
@@ -897,7 +1939,7 @@ pass_ipa_tree_profile::gate (function *)
      disabled.  */
   return (!in_lto_p && !flag_auto_profile
 	  && (flag_branch_probabilities || flag_test_coverage
-	      || profile_arc_flag));
+	      || profile_arc_flag || profile_condition_flag));
 }
 
 } // anon namespace

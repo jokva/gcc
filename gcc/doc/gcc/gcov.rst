@@ -20,6 +20,7 @@ test code coverage in your programs.
       [ :option:`-a` | :option:`--all-blocks` ]
       [ :option:`-b` | :option:`--branch-probabilities` ]
       [ :option:`-c` | :option:`--branch-counts` ]
+      [ :option:`-g` | :option:`--conditions` ]
       [ :option:`-d` | :option:`--display-progress` ]
       [ :option:`-f` | :option:`--function-summaries` ]
       [ :option:`-j` | :option:`--json-format` ]

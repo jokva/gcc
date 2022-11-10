@@ -38,6 +38,13 @@ Options
   Write branch frequencies as the number of branches taken, rather than
   the percentage of branches taken.
 
+.. option:: -g, --conditions
+
+  Write condition coverage to the output file, and write condition summary info
+  to the standard output.  This option allows you to see if the conditions in
+  your program at least once had an independent effect on the outcome of the
+  boolean expression (modified condition/decision coverage).
+
 .. option:: -d, --display-progress
 
   Display the progress on the standard output.
@@ -143,6 +150,7 @@ Options
     {
       "branches": ["$branch"],
       "count": 2,
+      "conditions": ["$condition"],
       "line_number": 15,
       "unexecuted_block": false,
       "function_name": "foo",
@@ -178,6 +186,29 @@ Options
   * :samp:`{fallthrough}` : true when the branch is a fall through branch
 
   * :samp:`{throw}` : true when the branch is an exceptional branch
+
+  Each :samp:`{condition}` has the following form:
+
+  .. code-block:: json
+
+    {
+      "count": 4,
+      "covered": 2,
+      "not_covered_false": [],
+      "not_covered_true": [0, 1],
+    }
+
+  Fields of the :samp:`{condition}` element have following semantics:
+
+  * :samp:`{count}` : number of condition outcomes in this expression
+
+  * :samp:`{covered}` : number of covered condition outcomes in this expression
+
+  * :samp:`{not_covered_true}` : terms, by index, not seen as true in this
+    expression
+
+  * :samp:`{not_covered_false}` : terms, by index, not seen as false in this
+    expression
 
 .. option:: -H, --human-readable
 

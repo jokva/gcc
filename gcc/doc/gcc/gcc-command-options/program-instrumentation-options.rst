@@ -66,6 +66,13 @@ program analysis purposes.
 
   .. index:: gcov
 
+.. option:: -fprofile-conditions
+
+  Add code so that program conditions are instrumented.  During execution the
+  program records what terms in a conditional contributes to a decision.  The
+  data may be used to verify that all terms in a booleans are tested and have
+  an effect on the outcome of a condition.
+
 .. option:: --coverage
 
   This option is used to compile and link code instrumented for coverage
@@ -112,6 +119,10 @@ program analysis purposes.
   executed.  When an arc is the only exit or only entrance to a block, the
   instrumentation code can be added to the block; otherwise, a new basic
   block must be created to hold the instrumentation code.
+
+  With :option:`-fprofile-conditions`, for each conditional in your program GCC
+  creates a bitset and records the exercised boolean values that have an
+  independent effect on the outcome of that expression.
 
 .. option:: -ftest-coverage
 
