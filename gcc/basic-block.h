@@ -148,6 +148,10 @@ struct GTY((chain_next ("%h.next_bb"), chain_prev ("%h.prev_bb"))) basic_block_d
 
   /* Expected number of executions: calculated in profile.cc.  */
   profile_count count;
+
+  /* Discriminator for condition coverage; same-expression basic conditions
+     have the same cond_uid.  */
+  unsigned cond_uid;
 };
 
 /* This ensures that struct gimple_bb_info is smaller than

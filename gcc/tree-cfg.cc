@@ -252,6 +252,17 @@ build_gimple_cfg (gimple_seq seq)
   cleanup_dead_labels ();
   delete discriminator_per_locus;
   discriminator_per_locus = NULL;
+
+  /* Store the condition uid from the gcond statements in the corresponding
+     basic block before it gets clobbered by some other pass.  */
+  basic_block bb;
+  FOR_EACH_BB_FN(bb, cfun)
+  {
+    gimple *stmt = gsi_stmt (gsi_last_bb (bb));
+    if (!safe_is_a<gcond *> (stmt))
+      continue;
+    bb->cond_uid = gimple_uid (stmt);
+  }
 }
 
 /* Look for ANNOTATE calls with loop annotation kind in BB; if found, remove
@@ -2250,6 +2261,9 @@ gimple_merge_blocks (basic_block a, basic_block b)
   last = gsi_last_bb (a);
   gsi_insert_seq_after (&last, bb_seq (b), GSI_NEW_STMT);
   set_bb_seq (b, NULL);
+
+  /* Update the basic condition id.  */
+  a->cond_uid = b->cond_uid;
 
   if (cfgcleanup_altered_bbs)
     bitmap_set_bit (cfgcleanup_altered_bbs, a->index);
@@ -6390,6 +6404,13 @@ gimple_split_block (basic_block bb, void *stmt)
   for (gsi_tgt = gsi_start (list);
        !gsi_end_p (gsi_tgt); gsi_next (&gsi_tgt))
     gimple_set_bb (gsi_stmt (gsi_tgt), new_bb);
+
+  /* If this has a conditional jump, store the cond_uid in the right block.  */
+  if (bb->cond_uid != 0 && block_ends_with_condjump_p (new_bb))
+  {
+      new_bb->cond_uid = bb->cond_uid;
+      bb->cond_uid = 0;
+  }
 
   return new_bb;
 }
