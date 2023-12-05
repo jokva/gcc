@@ -71,6 +71,14 @@ along with GCC; see the file COPYING3.  If not see
 #include "context.h"
 #include "tree-nested.h"
 
+/* Initial value for the condition identifier, which it can be reset to
+   on when entering functions.  0 is already the default/untouched value, so
+   start at non-zero.  A valid and set id should always be > 0.  */
+static const unsigned initial_cond_uid = 1;
+static unsigned nextuid = 0;
+unsigned next_cond_uid () { return nextuid++; }
+void reset_cond_uid () { nextuid = initial_cond_uid; }
+
 /* Hash set of poisoned variables in a bind expr.  */
 static hash_set<tree> *asan_poisoned_variables = NULL;
 
@@ -4137,7 +4145,7 @@ gimplify_call_expr (tree *expr_p, gimple_seq *pre_p, bool want_value)
 
 static tree
 shortcut_cond_r (tree pred, tree *true_label_p, tree *false_label_p,
-		 location_t locus)
+		 location_t locus, unsigned condition_uid)
 {
   tree local_label = NULL_TREE;
   tree t, expr = NULL;
@@ -4159,13 +4167,14 @@ shortcut_cond_r (tree pred, tree *true_label_p, tree *false_label_p,
 	false_label_p = &local_label;
 
       /* Keep the original source location on the first 'if'.  */
-      t = shortcut_cond_r (TREE_OPERAND (pred, 0), NULL, false_label_p, locus);
+      t = shortcut_cond_r (TREE_OPERAND (pred, 0), NULL, false_label_p, locus,
+			   condition_uid);
       append_to_statement_list (t, &expr);
 
       /* Set the source location of the && on the second 'if'.  */
       new_locus = rexpr_location (pred, locus);
       t = shortcut_cond_r (TREE_OPERAND (pred, 1), true_label_p, false_label_p,
-			   new_locus);
+			   new_locus, condition_uid);
       append_to_statement_list (t, &expr);
     }
   else if (TREE_CODE (pred) == TRUTH_ORIF_EXPR)
@@ -4182,13 +4191,14 @@ shortcut_cond_r (tree pred, tree *true_label_p, tree *false_label_p,
 	true_label_p = &local_label;
 
       /* Keep the original source location on the first 'if'.  */
-      t = shortcut_cond_r (TREE_OPERAND (pred, 0), true_label_p, NULL, locus);
+      t = shortcut_cond_r (TREE_OPERAND (pred, 0), true_label_p, NULL, locus,
+			   condition_uid);
       append_to_statement_list (t, &expr);
 
       /* Set the source location of the || on the second 'if'.  */
       new_locus = rexpr_location (pred, locus);
       t = shortcut_cond_r (TREE_OPERAND (pred, 1), true_label_p, false_label_p,
-			   new_locus);
+			   new_locus, condition_uid);
       append_to_statement_list (t, &expr);
     }
   else if (TREE_CODE (pred) == COND_EXPR
@@ -4211,9 +4221,11 @@ shortcut_cond_r (tree pred, tree *true_label_p, tree *false_label_p,
       new_locus = rexpr_location (pred, locus);
       expr = build3 (COND_EXPR, void_type_node, TREE_OPERAND (pred, 0),
 		     shortcut_cond_r (TREE_OPERAND (pred, 1), true_label_p,
-				      false_label_p, locus),
+				      false_label_p, locus, condition_uid),
 		     shortcut_cond_r (TREE_OPERAND (pred, 2), true_label_p,
-				      false_label_p, new_locus));
+				      false_label_p, new_locus,
+				      condition_uid));
+      SET_EXPR_UID (expr, condition_uid);
     }
   else
     {
@@ -4221,6 +4233,7 @@ shortcut_cond_r (tree pred, tree *true_label_p, tree *false_label_p,
 		     build_and_jump (true_label_p),
 		     build_and_jump (false_label_p));
       SET_EXPR_LOCATION (expr, locus);
+      SET_EXPR_UID (expr, condition_uid);
     }
 
   if (local_label)
@@ -4271,12 +4284,41 @@ find_goto_label (tree expr)
   return NULL_TREE;
 }
 
+
+/* Given a multi-term condition (ANDIF, ORIF), walk the predicate and tag every
+   term with uid.  When two basic conditions share the uid discriminator when
+   they belong to the same predicate, which used by the condition coverage.
+   Doing this as an explicit step makes for a simpler implementation than
+   weaving it into the splitting code as the splitting code eventually reaches
+   back up to gimplfiy_expr which makes bookkeeping complicated.  */
+static void
+tag_shortcut_cond (tree pred, unsigned condition_uid)
+{
+  if (TREE_CODE (pred) == TRUTH_ANDIF_EXPR
+      || TREE_CODE (pred) == TRUTH_ORIF_EXPR)
+    {
+      tree fst = TREE_OPERAND (pred, 0);
+      tree lst = TREE_OPERAND (pred, 1);
+
+      if (TREE_CODE (fst) == TRUTH_ANDIF_EXPR
+	  || TREE_CODE (fst) == TRUTH_ORIF_EXPR)
+	tag_shortcut_cond (fst, condition_uid);
+      else if (TREE_CODE (fst) == COND_EXPR)
+	SET_EXPR_UID (fst, condition_uid);
+
+      if (TREE_CODE (lst) == TRUTH_ANDIF_EXPR
+	  || TREE_CODE (lst) == TRUTH_ORIF_EXPR)
+	tag_shortcut_cond (lst, condition_uid);
+      else if (TREE_CODE (lst) == COND_EXPR)
+	SET_EXPR_UID (lst, condition_uid);
+    }
+}
 /* Given a conditional expression EXPR with short-circuit boolean
    predicates using TRUTH_ANDIF_EXPR or TRUTH_ORIF_EXPR, break the
    predicate apart into the equivalent sequence of conditionals.  */
 
 static tree
-shortcut_cond_expr (tree expr)
+shortcut_cond_expr (tree expr, unsigned condition_uid)
 {
   tree pred = TREE_OPERAND (expr, 0);
   tree then_ = TREE_OPERAND (expr, 1);
@@ -4287,6 +4329,8 @@ shortcut_cond_expr (tree expr)
   bool emit_end, emit_false, jump_over_else;
   bool then_se = then_ && TREE_SIDE_EFFECTS (then_);
   bool else_se = else_ && TREE_SIDE_EFFECTS (else_);
+
+  tag_shortcut_cond (pred, condition_uid);
 
   /* First do simple transformations.  */
   if (!else_se)
@@ -4303,7 +4347,7 @@ shortcut_cond_expr (tree expr)
 	  /* Set the source location of the && on the second 'if'.  */
 	  if (rexpr_has_location (pred))
 	    SET_EXPR_LOCATION (expr, rexpr_location (pred));
-	  then_ = shortcut_cond_expr (expr);
+	  then_ = shortcut_cond_expr (expr, condition_uid);
 	  then_se = then_ && TREE_SIDE_EFFECTS (then_);
 	  pred = TREE_OPERAND (pred, 0);
 	  expr = build3 (COND_EXPR, void_type_node, pred, then_, NULL_TREE);
@@ -4325,13 +4369,16 @@ shortcut_cond_expr (tree expr)
 	  /* Set the source location of the || on the second 'if'.  */
 	  if (rexpr_has_location (pred))
 	    SET_EXPR_LOCATION (expr, rexpr_location (pred));
-	  else_ = shortcut_cond_expr (expr);
+	  else_ = shortcut_cond_expr (expr, condition_uid);
 	  else_se = else_ && TREE_SIDE_EFFECTS (else_);
 	  pred = TREE_OPERAND (pred, 0);
 	  expr = build3 (COND_EXPR, void_type_node, pred, NULL_TREE, else_);
 	  SET_EXPR_LOCATION (expr, locus);
 	}
     }
+
+  /* The expr tree should also have the expression id set.  */
+  SET_EXPR_UID (expr, condition_uid);
 
   /* If we're done, great.  */
   if (TREE_CODE (pred) != TRUTH_ANDIF_EXPR
@@ -4380,7 +4427,7 @@ shortcut_cond_expr (tree expr)
   /* If there was nothing else in our arms, just forward the label(s).  */
   if (!then_se && !else_se)
     return shortcut_cond_r (pred, true_label_p, false_label_p,
-			    EXPR_LOC_OR_LOC (expr, input_location));
+			    EXPR_LOC_OR_LOC (expr, input_location), condition_uid);
 
   /* If our last subexpression already has a terminal label, reuse it.  */
   if (else_se)
@@ -4412,7 +4459,8 @@ shortcut_cond_expr (tree expr)
   jump_over_else = block_may_fallthru (then_);
 
   pred = shortcut_cond_r (pred, true_label_p, false_label_p,
-			  EXPR_LOC_OR_LOC (expr, input_location));
+			  EXPR_LOC_OR_LOC (expr, input_location),
+			  condition_uid);
 
   expr = NULL;
   append_to_statement_list (pred, &expr);
@@ -4688,7 +4736,7 @@ gimplify_cond_expr (tree *expr_p, gimple_seq *pre_p, fallback_t fallback)
   if (TREE_CODE (TREE_OPERAND (expr, 0)) == TRUTH_ANDIF_EXPR
       || TREE_CODE (TREE_OPERAND (expr, 0)) == TRUTH_ORIF_EXPR)
     {
-      expr = shortcut_cond_expr (expr);
+      expr = shortcut_cond_expr (expr, next_cond_uid ());
 
       if (expr != *expr_p)
 	{
@@ -4752,11 +4800,16 @@ gimplify_cond_expr (tree *expr_p, gimple_seq *pre_p, fallback_t fallback)
   else
     label_false = create_artificial_label (UNKNOWN_LOCATION);
 
+  unsigned cond_uid = EXPR_COND_UID (expr);
+  if (cond_uid == 0)
+    cond_uid = next_cond_uid ();
+
   gimple_cond_get_ops_from_tree (COND_EXPR_COND (expr), &pred_code, &arm1,
 				 &arm2);
   cond_stmt = gimple_build_cond (pred_code, arm1, arm2, label_true,
 				 label_false);
   gimple_set_location (cond_stmt, EXPR_LOCATION (expr));
+  cfun->conditions->put (cond_stmt, cond_uid);
   copy_warning (cond_stmt, COND_EXPR_COND (expr));
   gimplify_seq_add_stmt (&seq, cond_stmt);
   gimple_stmt_iterator gsi = gsi_last (seq);
@@ -18175,6 +18228,8 @@ gimplify_function_tree (tree fndecl)
     push_cfun (DECL_STRUCT_FUNCTION (fndecl));
   else
     push_struct_function (fndecl);
+
+  reset_cond_uid ();
 
   /* Tentatively set PROP_gimple_lva here, and reset it in gimplify_va_arg_expr
      if necessary.  */

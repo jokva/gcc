@@ -287,6 +287,10 @@ struct GTY(()) function {
   /* Vector of function local variables, functions, types and constants.  */
   vec<tree, va_gc> *local_decls;
 
+  /* Map from conditions to a (function) unique identifier, so that two basic
+     conditions that belong to the same expression have the same id.  */
+  hash_map<gcond *, unsigned> *conditions;
+
   /* For md files.  */
 
   /* tm.h can use this to store whatever it likes.  */
@@ -736,5 +740,7 @@ extern const char *current_function_name (void);
 extern void used_types_insert (tree);
 
 extern bool currently_expanding_function_start;
+
+extern unsigned basic_condition_uid (const struct function *, basic_block);
 
 #endif  /* GCC_FUNCTION_H */

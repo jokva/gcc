@@ -85,6 +85,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "value-range.h"
 #include "gimple-range.h"
 #include "insn-attr.h"
+#include "gimple-iterator.h"
 
 /* So we can assign to cfun in this file.  */
 #undef cfun
@@ -213,6 +214,7 @@ free_after_compilation (struct function *f)
 
   memset (crtl, 0, sizeof (struct rtl_data));
   f->eh = NULL;
+  f->conditions = NULL;
   f->machine = NULL;
   f->cfg = NULL;
   f->curr_properties &= ~PROP_cfg;
@@ -4794,6 +4796,7 @@ allocate_struct_function (tree fndecl, bool abstract_p)
   cfun = ggc_cleared_alloc<function> ();
 
   init_eh_for_function ();
+  cfun->conditions = hash_map<gcond*, unsigned>::create_ggc ();
 
   if (init_machine_status)
     cfun->machine = (*init_machine_status) ();
@@ -6975,6 +6978,22 @@ add_local_decl (struct function *fun, tree d)
 {
   gcc_assert (VAR_P (d));
   vec_safe_push (fun->local_decls, d);
+}
+
+/* Get the basic condition identifier for the basic block in the
+   function fn, which is set in gimplification of conditional expressions.  If
+   a basic block does not end with a conditional jump, or the jump was created
+   implicitly (e.g. from a C++ destructor) this function returns 0.  */
+unsigned
+basic_condition_uid (const struct function *fn, basic_block bb)
+{
+  gimple *stmt = gsi_stmt (gsi_last_nondebug_bb (bb));
+  if (!stmt)
+    return 0;
+  if (!is_a<gcond *> (stmt))
+    return 0;
+  unsigned *v = fn->conditions->get (as_a<gcond *> (stmt));
+  return v ? *v : 0;
 }
 
 namespace {
